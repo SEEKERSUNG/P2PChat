@@ -152,6 +152,7 @@
       </div>
       <div class="spacer"></div>
       <span class="status" id="topStatus">未连接</span>
+      <button class="ghost sm" id="btnReconnect" onclick="quickReconnect()" style="display:none">⚡ 重连</button>
       <button class="ghost sm" id="btnDetail" onclick="openDetail()" style="display:none">详情/编辑</button>
     </div>
     <div id="messages"></div>
@@ -182,11 +183,13 @@
     <div class="desc">修改备注与 IP（IP 为识别用，自动重连需重新交换连接码）。</div>
     <div class="field"><label>备注名</label><input id="dName"></div>
     <div class="field"><label>IPv6 / IPv4 地址</label><input id="dIp" placeholder="如 2001:db8::1 或 192.168.1.5"></div>
+    <div class="hint" id="dIpInfo" style="margin:-4px 0 8px">当前对端地址：—</div>
     <div class="field"><label>备注</label><textarea id="dNote" rows="3"></textarea></div>
     <div class="row"><label>最后联系</label><span class="pill" id="dSeen">—</span></div>
     <div class="actions">
       <button class="danger" onclick="deleteContact()">删除联系人</button>
       <button class="ghost" onclick="clearHistory()">清空记录</button>
+      <button class="ghost" onclick="closeDialog('dlgDetail')">取消</button>
       <button onclick="saveDetail()">保存</button>
     </div>
   </div>
@@ -197,13 +200,7 @@
   <div class="modal">
     <h2>设置</h2>
     <div class="field"><label>我的显示名</label><input id="setName"></div>
-    <div class="field"><label>STUN 服务器（每行一个，IPv4 跨网用；IPv6/局域网可留空）</label>
-      <textarea id="setStun" rows="4" style="font-family:Consolas,monospace"></textarea></div>
-    <div class="field" style="display:flex;align-items:center;gap:8px">
-      <input type="checkbox" id="setDirect" onchange="toggleDirectOnly()" style="width:auto">
-      <label for="setDirect" style="margin:0;cursor:pointer">仅 IPv6/局域网直连（禁用 STUN，不联系任何外部服务）</label>
-    </div>
-    <div class="hint" id="directHint" style="display:none">已禁用 STUN：仅使用本机 host 候选直连。需双方均为全局 IPv6 或同一局域网，且系统防火墙放行入站 UDP；跨网 IPv6 若连不上，Chrome 可在 <span class="pill">chrome://flags</span> 关闭 mDNS 混淆或改回启用 STUN。</div>
+    <div class="hint">本程序为<b>仅直连模式</b>：不使用任何 STUN/TURN，仅依赖本机 host 候选。仅适用于「同一局域网」或「双方均有公网 IP（含全局 IPv6）」。需系统防火墙放行入站 UDP；若连不上，可在 <span class="pill">chrome://flags</span> 关闭 mDNS 混淆以暴露真实本机 IP。</div>
     <div class="hint">提示：因 WebRTC 会话信息每次临时生成，已保存联系人无法凭 IP 自动重连，每次重连仍需重新交换一次连接码。</div>
     <div class="actions">
       <button class="ghost" onclick="closeDialog('dlgSettings')">取消</button>
@@ -219,7 +216,8 @@
 "use strict";
 /* ===================== 数据层 ===================== */
 const STORE_KEY = "ipvchat_data";
-const DEFAULT_STUN = ["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"];
+/* 仅直连模式：不使用任何 STUN/TURN，仅依赖本机 host 候选（局域网 IP 或全局 IPv6）。
+   因此仅适用于「同一局域网」或「双方均有公网 IP（含全局 IPv6）」的场景。 */
 
 let store = loadStore();
 let currentId = null;          // 当前选中联系人 id
@@ -228,14 +226,17 @@ let pendingRole = null;        // 'offer' | 'answer'
 let pendingChannel = null;
 let connections = new Map();   // contactId -> channel (已确认身份的活跃连接)
 let channelMap = new Map();    // channel -> {pc, contactId|null}
+let revivable = new Map();     // contactId -> pc（断开后保留的存活通道，用于尝试免交换码恢复）
+let peerBye = new Set();       // 收到对端 bye 主动断开的联系人，不自动恢复
+let autoReviveTimers = new Map(); // contactId -> timeoutId
 
 function defaultStore(){
   return {
-    version:2,
+    version:4,
     identity:{ id: randId(), name:"用户"+Math.floor(Math.random()*9000+1000) },
     contacts:[],
     messages:{},
-    settings:{ stunServers:[], directOnly:true }
+    settings:{}
   };
 }
 function loadStore(){
@@ -246,14 +247,8 @@ function loadStore(){
     if(!d.identity) d.identity = defaultStore().identity;
     if(!d.contacts) d.contacts = [];
     if(!d.messages) d.messages = {};
-    if(!d.settings) d.settings = { stunServers:[], directOnly:true };
-    // 版本迁移：v1 的默认是 STUN，v2 起默认改为直连模式。旧的 STUN 值是历史默认而非用户显式选择，强制切到直连。
-    if(!d.version || d.version < 2){
-      d.settings.directOnly = true;
-      d.settings.stunServers = [];
-      d.version = 2;
-    }
-    if(d.settings.directOnly===undefined) d.settings.directOnly = (d.settings.stunServers||[]).length===0;
+    if(!d.settings) d.settings = {};
+    d.version = 4; // v4 起仅直连，忽略历史 STUN 配置
     return d;
   }catch(e){ console.warn("load fail",e); return defaultStore(); }
 }
@@ -283,27 +278,31 @@ function updateMobileView(){
 }
 
 /* ===================== WebRTC ===================== */
-function iceServers(){ return (store.settings.stunServers||[]).filter(u=>u).map(u=>({urls:u})); }
-function newPC(){ return new RTCPeerConnection({ iceServers: iceServers() }); }
+function newPC(){
+  const pc = new RTCPeerConnection({ iceServers: [] }); // 仅直连，不使用 STUN/TURN
+  // 默认处理对端在存活通道上新开的 DataChannel（用于免交换码恢复）
+  pc.ondatachannel = e=>{ if(!channelMap.has(e.channel)) bindChannel(e.channel, pc, null, null); };
+  return pc;
+}
 
-/* 探测本机 IP（IPv4/IPv6）：用 WebRTC ICE 候选收集，host=本机地址，srflx=公网地址 */
+/* 探测本机 IP（IPv4/IPv6）：用 WebRTC ICE host 候选收集（仅直连，无 STUN） */
 async function refreshMyIp(){
   const box=document.getElementById('myIpBox');
   if(box) box.innerHTML='<span class="mi-empty">检测中…</span>';
-  const ips={host4:new Set(),host6:new Set(),pub4:new Set(),pub6:new Set(),mdns:new Set()};
+  const ips={host4:new Set(),host6:new Set(),mdns:new Set()};
   let pc;
   try{
-    pc=new RTCPeerConnection({iceServers: iceServers()});
+    pc=new RTCPeerConnection({iceServers: []});
     pc.createDataChannel('ip');
     pc.onicecandidate=e=>{
       if(!e.candidate||!e.candidate.candidate) return;
       const parts=e.candidate.candidate.split(' ');
       const addr=parts[4], typ=parts[7];
       if(!addr||!typ) return;
-      if(addr.endsWith('.local')){ ips.mdns.add(addr); return; }
-      const v6=addr.includes(':');
-      if(typ==='host'){ (v6?ips.host6:ips.host4).add(addr); }
-      else if(typ==='srflx'){ (v6?ips.pub6:ips.pub4).add(addr); }
+      const isRealIp=a=> a && !a.endsWith('.local') && a!=='0.0.0.0' && a!=='::';
+      const bucket=(a)=> a.includes(':')?ips.host6:ips.host4;
+      if(addr.endsWith('.local')){ ips.mdns.add(addr); }
+      else if(typ==='host'){ bucket(addr).add(addr); }
     };
     const offer=await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -323,20 +322,15 @@ function renderMyIp(ips){
   };
   push('IPv4',ips.host4);
   push('IPv6',ips.host6);
-  push('公网v4',ips.pub4);
-  push('公网v6',ips.pub6);
   let html=lines.join('');
   if(!html){
     if(ips.mdns.size){
-      html='<div class="mi-note">仅检测到 mDNS（*.local），真实 IP 被浏览器隐藏。跨网直连请在 chrome://flags 关闭 mDNS 混淆，或在设置启用 STUN 查看公网 IP。</div>';
+      html='<div class="mi-note">仅检测到 mDNS（*.local），真实 IP 被浏览器隐藏。直连请在 chrome://flags 关闭 mDNS 混淆以暴露真实本机 IP。</div>';
     }else{
       html='<div class="mi-empty">未检测到 IP 地址</div>';
     }
   }else if(ips.mdns.size){
-    html+='<div class="mi-note">部分本地 IP 被隐藏为 mDNS，跨网直连可能需关闭 mDNS 混淆。</div>';
-  }
-  if(ips.pub4.size+ips.pub6.size===0 && (ips.host4.size+ips.host6.size>0)){
-    html+='<div class="mi-note" style="color:var(--mut)">提示：以上为本机/局域网地址。在设置启用 STUN 可探测公网 IP。</div>';
+    html+='<div class="mi-note">部分本地 IP 被浏览器隐藏为 mDNS（*.local）。若连不上，可在 chrome://flags 关闭 mDNS 混淆。</div>';
   }
   box.innerHTML=html;
 }
@@ -345,14 +339,85 @@ function waitIceComplete(pc){
   return new Promise(res=>{
     if(pc.iceGatheringState==='complete') return res();
     let done=false;
-    const check=()=>{ if(!done && pc.iceGatheringState==='complete'){ done=true; pc.removeEventListener('icegatheringstatechange',check); res(); } };
+    const finish=()=>{ if(!done){ done=true; pc.removeEventListener('icegatheringstatechange',check); res(); } };
+    const check=()=>{ if(pc.iceGatheringState==='complete') finish(); };
     pc.addEventListener('icegatheringstatechange',check);
-    setTimeout(()=>{ if(!done){ done=true; pc.removeEventListener('icegatheringstatechange',check); res(); } }, 4000); // 兜底
+    // 兜底：gathering 通常很快完成，5s 后用已收集的候选继续，防止异常卡死
+    setTimeout(finish, 5000);
   });
 }
 
 function encodeSignal(obj){ return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
 function decodeSignal(s){ return JSON.parse(decodeURIComponent(escape(atob(s.trim())))); }
+
+/* 检查 localDescription 中是否含有「真实 IP 的 host 候选」（非 mDNS） */
+function hasRealHostCandidate(pc){
+  const sdp = (pc.localDescription && pc.localDescription.sdp) || '';
+  return sdp.split('\n').some(l=>{
+    if(!l.startsWith('a=candidate=') || !l.includes(' typ host')) return false;
+    const addr = l.split(' ')[4];
+    return addr && !addr.endsWith('.local');
+  });
+}
+
+/* 连接建立看门狗：提交应答码后若 20s 内未建立连接，给出诊断提示 */
+let connectWatchdog=null;
+function startConnectWatchdog(pc, label){
+  clearConnectWatchdog();
+  connectWatchdog = setTimeout(()=>{
+    const established = [...channelMap.values()].some(i=>i.pc===pc && i.contactId);
+    if(!established){
+      toast("⚠ "+(label||"连接")+"未建立。仅直连需：①同一局域网或双方均有公网IP ②放行入站UDP ③Chrome 在 chrome://flags 关闭 mDNS 混淆后重试", 9000);
+    }
+  }, 20000);
+}
+function clearConnectWatchdog(){ if(connectWatchdog){ clearTimeout(connectWatchdog); connectWatchdog=null; } }
+
+/* 快速重连：先尝试基于存活通道免交换码恢复，失败再回退到交换连接码 */
+async function quickReconnect(){
+  if(!currentId) return;
+  const c=getContact(currentId); if(!c) return;
+  if(connections.has(currentId)){ toast("已处于连接状态"); return; }
+  // 1) 先尝试恢复
+  if(revivable.has(currentId)){
+    showConnectDialog([{step:`正在尝试恢复与「${escapeHtml(c.name)}」的连接…`, body:`
+      <p style="font-size:12px;color:var(--mut)">尝试复用上一次尚存的直连通道，无需交换码（仅双方页面都未关闭时可能成功）…</p>
+      <div class="mi-note" id="reviveStatus">尝试中…</div>`}]);
+    const ok = await attemptRevive(currentId);
+    if(ok){ toast("已恢复连接"); return; } // finalizeChannel 会关弹窗并切换视图
+    const rs=document.getElementById('reviveStatus');
+    if(rs) rs.textContent="恢复失败，转为重新交换连接码。";
+  }
+  // 2) 回退到手动交换
+  showConnectDialog([
+    {step:`重新交换连接码 · 与「${escapeHtml(c.name)}」重连`, body:`
+      <p style="font-size:12px;color:var(--mut)">恢复失败（页面已刷新或对端已关闭）。因 WebRTC 会话信息每次临时生成，需双方重新交换一次连接码。联系人信息与历史记录会自动延续。</p>
+      <div class="row">
+        <button onclick="startInvite()">我发起（生成邀请码）</button>
+        <button class="ghost" onclick="startAccept()">我接受（粘贴邀请码）</button>
+      </div>`}
+  ]);
+}
+/* 在存活的 PC 上重新打开 DataChannel，成功则免交换码恢复 */
+function attemptRevive(contactId){
+  return new Promise(res=>{
+    if(connections.has(contactId)){ res(true); return; } // 已连接
+    const pc = revivable.get(contactId);
+    if(!pc){ res(false); return; }
+    if(pc.iceConnectionState!=='connected' && pc.iceConnectionState!=='completed'){
+      // ICE 已断，清理并放弃
+      try{ pc.close(); }catch(e){}
+      revivable.delete(contactId);
+      res(false); return;
+    }
+    let ch;
+    try{ ch = pc.createDataChannel('chat',{ordered:true}); }
+    catch(e){ res(false); return; }
+    const to=setTimeout(()=>{ try{ch.close();}catch(e){} res(false); }, 5000);
+    ch.onopen=()=>{ clearTimeout(to); bindChannel(ch, pc, null, null); res(true); };
+    ch.onerror=()=>{ clearTimeout(to); res(false); };
+  });
+}
 
 /* 邀请方：生成邀请码 */
 async function startInvite(){
@@ -364,11 +429,15 @@ async function startInvite(){
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   await waitIceComplete(pc);
+  startConnectWatchdog(pc, "连接");
+  const mdnsWarn = hasRealHostCandidate(pc) ? '' :
+    '<div class="mi-note">⚠ 未检测到真实本机 IP（仅 mDNS）。直连很可能失败，请在 chrome://flags 关闭 mDNS 混淆后重试。</div>';
   const code = encodeSignal({type:"offer", sdp: pc.localDescription, identity: store.identity});
   showConnectDialog([
     {step:"第 1 步（共 3 步） · 你是邀请方", body:`
       <p style="font-size:12px;color:var(--mut)">把下面的<b>邀请码</b>发给对方（任意聊天工具），让对方点「接受连接」并粘贴。</p>
       <textarea class="codebox" id="codeOut" readonly>${code}</textarea>
+      ${mdnsWarn}
       <div class="row"><button onclick="copyText(document.getElementById('codeOut').value)">复制邀请码</button></div>`},
     {step:"第 3 步 · 等对方回发应答码后粘贴", body:`
       <textarea class="codebox" id="codeIn" placeholder="在此粘贴对方回发的应答码..."></textarea>
@@ -382,8 +451,9 @@ async function finalizeOffer(){
     const obj = decodeSignal(s);
     if(obj.type!=='answer') return toast("这不是应答码");
     await pendingPC.setRemoteDescription(new RTCSessionDescription(obj.sdp));
-    toast("已提交，等待连接建立...");
+    toast("已提交，正在建立连接…", 3000);
     document.getElementById('dlgConnect').classList.remove('show');
+    startConnectWatchdog(pendingPC, "连接");
   }catch(e){ toast("应答码无效: "+e.message); }
 }
 
@@ -413,6 +483,8 @@ async function acceptOffer(){
     const ans = await pc.createAnswer();
     await pc.setLocalDescription(ans);
     await waitIceComplete(pc);
+    startConnectWatchdog(pc, "连接");
+    if(!hasRealHostCandidate(pc)) toast("⚠ 未检测到真实本机 IP（仅 mDNS），直连可能失败；可在 chrome://flags 关闭 mDNS 混淆", 6000);
     const code = encodeSignal({type:"answer", sdp: pc.localDescription, identity: store.identity});
     document.getElementById('codeOut').value = code;
     toast("已生成应答码，请复制回发给对方");
@@ -427,7 +499,7 @@ function bindChannel(channel, pc, knownPeerId, knownPeerName){
   channel.onerror = ()=> onChannelClose(channel);
   pc.oniceconnectionstatechange = ()=>{
     const st = pc.iceConnectionState;
-    if(st==='failed'){ toast("ICE 连接失败，可能需更换网络或检查 STUN"); onChannelClose(channel); }
+    if(st==='failed'){ clearConnectWatchdog(); toast("ICE 连接失败：请确认双方在同一局域网或均有公网 IP，并放行入站 UDP", 6000); onChannelClose(channel); }
     else if(st==='disconnected'){ toast("连接中断，尝试恢复中..."); }
   };
 }
@@ -453,7 +525,7 @@ function onChannelMsg(channel, data){
   const cId = info && info.contactId;
   if(!cId) return; // 身份未确认前丢弃业务消息
   if(m.type==='msg'){ addMessage(cId, 'in', m.text, m.ts); }
-  else if(m.type==='bye'){ appendSys(cId,"对方已断开"); }
+  else if(m.type==='bye'){ appendSys(cId,"对方已断开"); peerBye.add(cId); }
 }
 function finalizeChannel(channel, peerId, peerName){
   const info = channelMap.get(channel);
@@ -463,8 +535,12 @@ function finalizeChannel(channel, peerId, peerName){
   info.contactId = peerId;
   const c = ensureContact(peerId, peerName);
   connections.set(peerId, channel);
+  revivable.delete(peerId); // 新连接已建立，清除旧的恢复缓存
+  peerBye.delete(peerId);
+  cancelAutoRevive(peerId);
   if(pendingPC===info.pc) pendingPC=null; // 握手完成，不再算 pending
   pendingChannel=null;
+  clearConnectWatchdog();
   c.lastSeen = nowTs();
   detectPeerIp(info.pc, peerId);
   saveStore();
@@ -480,17 +556,45 @@ function currentConnId(){ // 当前选中且已连接
 function onChannelClose(channel){
   const info = channelMap.get(channel); if(!info) return;
   const cId = info.contactId;
+  const pc = info.pc;
   channelMap.delete(channel);
   if(cId && connections.get(cId)===channel){
     connections.delete(cId);
+    // 保留底层 PC 以便尝试免交换码恢复（PC 未被主动 close 时可能仍存活）
+    if(pc && pc.iceConnectionState!=='closed'){ revivable.set(cId, pc); }
     if(cId===currentId){ appendSys(cId,"连接已断开"); renderChat(); }
     renderContacts();
+    // 自动尝试恢复（对端主动 bye 或 PC 已关闭则跳过）
+    if(revivable.has(cId) && !peerBye.has(cId) && !autoReviveTimers.has(cId)){
+      scheduleAutoRevive(cId);
+    }
   }
 }
+function scheduleAutoRevive(cId){
+  const delay = 2500 + Math.floor(Math.random()*2000); // 2.5~4.5s 随机抖动，降低双方同时触发
+  const t = setTimeout(async ()=>{
+    autoReviveTimers.delete(cId);
+    if(connections.has(cId)) return; // 已恢复或已重连
+    if(!revivable.has(cId)) return;
+    appendSys(cId, "↻ 正在尝试自动恢复连接…");
+    const ok = await attemptRevive(cId);
+    if(!ok && cId===currentId){
+      appendSys(cId, "自动恢复失败，可点「⚡ 重连」手动交换连接码");
+      renderChat();
+    }
+  }, delay);
+  autoReviveTimers.set(cId, t);
+}
+function cancelAutoRevive(cId){
+  const t=autoReviveTimers.get(cId);
+  if(t){ clearTimeout(t); autoReviveTimers.delete(cId); }
+}
 function cleanupPending(){
+  clearConnectWatchdog();
   if(pendingPC){
-    const inUse = [...channelMap.values()].some(i=>i.pc===pendingPC);
-    if(!inUse){ try{ pendingPC.close(); }catch(e){} }
+    // pendingPC 仍存在说明连接未完成（finalizeChannel 会把它置 null），可安全关闭并清理其通道
+    for(const [ch,info] of channelMap){ if(info.pc===pendingPC){ try{ch.close();}catch(e){} channelMap.delete(ch); } }
+    try{ pendingPC.close(); }catch(e){}
     pendingPC=null;
   }
   pendingChannel=null;
@@ -499,18 +603,26 @@ async function detectPeerIp(pc, contactId){
   try{
     await new Promise(r=>setTimeout(r,500));
     const stats = await pc.getStats();
-    let ip="";
+    let ip="", ctype="";
     stats.forEach(r=>{
       if(r.type==='candidate-pair' && r.selected){
         const rem = stats.get(r.remoteCandidateId);
-        if(rem && rem.address) ip = rem.address;
-        else if(rem && rem.ip) ip = rem.ip;
+        if(rem){
+          if(rem.address) ip = rem.address; else if(rem.ip) ip = rem.ip;
+          ctype = rem.candidateType || ''; // host / srflx / prflx / relay
+        }
       }
     });
     if(ip){
-      const c=getContact(contactId); if(c){ c.ip=ip; c.lastSeen=nowTs(); saveStore(); renderContacts(); if(contactId===currentId) renderTopbar(); }
+      const c=getContact(contactId);
+      if(c){ c.ip=ip; c.ipType=ctype; c.lastSeen=nowTs(); saveStore(); renderContacts(); if(contactId===currentId){ renderTopbar(); if(document.getElementById('dIpInfo')) renderDetailIpInfo(c); } }
     }
   }catch(e){}
+}
+function ipModeLabel(ctype){
+  // 仅直连模式：host/prflx 为直连，理论上不会出现 srflx/relay
+  if(ctype==='host'||ctype==='prflx') return '直连';
+  return ctype||'';
 }
 
 /* 发送消息 */
@@ -566,16 +678,19 @@ function renderContacts(){
 function renderChat(){ renderTopbar(); renderMessages(); }
 function renderTopbar(){
   const btn=document.getElementById('btnDetail');
+  const rc=document.getElementById('btnReconnect');
   const ta=document.getElementById('inputMsg');
-  if(!currentId){ document.getElementById('topTitle').textContent='未选择联系人'; document.getElementById('topSub').textContent=''; document.getElementById('topStatus').textContent=''; document.getElementById('topStatus').className='status'; btn.style.display='none'; ta.disabled=true; document.getElementById('messages').innerHTML=emptyHtml(); return; }
+  if(!currentId){ document.getElementById('topTitle').textContent='未选择联系人'; document.getElementById('topSub').textContent=''; document.getElementById('topStatus').textContent=''; document.getElementById('topStatus').className='status'; btn.style.display='none'; rc.style.display='none'; ta.disabled=true; document.getElementById('messages').innerHTML=emptyHtml(); return; }
   const c=getContact(currentId); if(!c) return;
   document.getElementById('topTitle').textContent=c.name;
   document.getElementById('topSub').textContent=c.ip||'未知 IP';
   const st=document.getElementById('topStatus');
-  if(connections.has(currentId)){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; }
+  const connected=connections.has(currentId);
+  if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; }
   else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=true; }
   btn.style.display='';
-  if(!connections.has(currentId) && !hasMessages(currentId)) document.getElementById('messages').innerHTML=notConnHtml();
+  rc.style.display= connected? 'none':'inline-block'; // 仅未连接时显示重连按钮
+  if(!connected && !hasMessages(currentId)) document.getElementById('messages').innerHTML=notConnHtml();
 }
 function renderMessages(){
   const box=document.getElementById('messages');
@@ -622,7 +737,17 @@ function openDetail(){
   document.getElementById('dIp').value=c.ip||'';
   document.getElementById('dNote').value=c.note||'';
   document.getElementById('dSeen').textContent=c.lastSeen? new Date(c.lastSeen).toLocaleString():'—';
+  renderDetailIpInfo(c);
   document.getElementById('dlgDetail').classList.add('show');
+}
+function renderDetailIpInfo(c){
+  const el=document.getElementById('dIpInfo'); if(!el) return;
+  if(connections.has(c.id)){
+    const mode=ipModeLabel(c.ipType);
+    el.innerHTML = `当前对端地址：<b style="font-family:Consolas,monospace">${escapeHtml(c.ip||'未知')}</b>${mode?` <span class="pill">${mode}</span>`:''}`;
+  }else{
+    el.innerHTML = `当前对端地址：<span style="color:var(--mut)">未连接（上次：${escapeHtml(c.ip||'—')}${c.ipType?(' · '+ipModeLabel(c.ipType)):''}）</span>`;
+  }
 }
 function saveDetail(){
   const c=getContact(currentId); if(!c) return;
@@ -637,6 +762,7 @@ function deleteContact(){
   if(!confirm("确定删除该联系人及其聊天记录？")) return;
   const ch=connections.get(currentId);
   if(ch){ const info=channelMap.get(ch); if(info){ try{info.pc.close();}catch(e){} channelMap.delete(ch);} connections.delete(currentId); }
+  revivable.delete(currentId); cancelAutoRevive(currentId); peerBye.delete(currentId);
   store.contacts=store.contacts.filter(c=>c.id!==currentId);
   delete store.messages[currentId];
   currentId=null; saveStore(); renderAll(); closeDialog('dlgDetail'); toast("已删除");
@@ -650,25 +776,10 @@ function clearHistory(){
 /* 设置 */
 function openSettings(){
   document.getElementById('setName').value=store.identity.name;
-  const st=store.settings, direct = !!st.directOnly || (st.stunServers||[]).length===0;
-  document.getElementById('setDirect').checked=direct;
-  document.getElementById('setStun').value= direct? '' : (st.stunServers||[]).join('\n');
-  document.getElementById('setStun').disabled=direct;
-  document.getElementById('directHint').style.display= direct? 'block':'none';
   document.getElementById('dlgSettings').classList.add('show');
-}
-function toggleDirectOnly(){
-  const direct=document.getElementById('setDirect').checked;
-  const ta=document.getElementById('setStun');
-  ta.disabled=direct;
-  document.getElementById('directHint').style.display= direct? 'block':'none';
-  if(!direct && !ta.value.trim()) ta.value=DEFAULT_STUN.join('\n'); // 取消勾选且为空时回填默认
 }
 function saveSettings(){
   store.identity.name=document.getElementById('setName').value.trim()||store.identity.name;
-  const direct=document.getElementById('setDirect').checked;
-  store.settings.directOnly=direct;
-  store.settings.stunServers= direct? [] : document.getElementById('setStun').value.split('\n').map(s=>s.trim()).filter(Boolean);
   saveStore(); renderIdentity(); closeDialog('dlgSettings'); toast("已保存");
 }
 
@@ -692,9 +803,8 @@ document.getElementById('fileInput').addEventListener('change', e=>{
       if(!confirm("导入将覆盖当前数据，是否继续？")) return;
       store={...defaultStore(), ...d};
       if(!store.messages) store.messages={};
-      if(!store.settings) store.settings={stunServers:[],directOnly:true};
-      if(!store.version || store.version < 2){ store.settings.directOnly=true; store.settings.stunServers=[]; store.version=2; }
-      if(store.settings.directOnly===undefined) store.settings.directOnly=(store.settings.stunServers||[]).length===0;
+      if(!store.settings) store.settings={};
+      store.version=4; // 仅直连，忽略历史 STUN 配置
       saveStore(); connections.clear(); currentId=null; renderAll(); toast("导入成功");
     }catch(err){ toast("导入失败: "+err.message); }
   };
@@ -716,9 +826,9 @@ function fallbackCopy(t){
   document.body.removeChild(ta);
 }
 let toastTimer=null;
-function toast(msg){
+function toast(msg, ms){
   const el=document.getElementById('toast'); el.textContent=msg; el.classList.add('show');
-  clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.classList.remove('show'),2200);
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.classList.remove('show'), ms||2200);
 }
 
 window.addEventListener('beforeunload', ()=>{ channelMap.forEach(i=>{try{i.pc.close();}catch(e){}}); });

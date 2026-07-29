@@ -95,6 +95,13 @@
 
   /* 移动端响应式 */
   #btnBack{display:none !important}
+  .myip{margin-top:10px;font-size:11px}
+  .mi-label{color:var(--mut);margin-bottom:5px;display:flex;align-items:center;gap:6px}
+  .mi-box{background:var(--panel2);border-radius:8px;padding:8px 9px;min-height:18px}
+  .mi-line{font-family:Consolas,monospace;margin:3px 0;word-break:break-all;line-height:1.4}
+  .mi-tag{display:inline-block;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:10px;color:var(--mut);margin-right:6px;vertical-align:middle}
+  .mi-empty{color:var(--mut)}
+  .mi-note{color:var(--warn);margin-top:5px;font-family:inherit}
   @media (max-width:680px){
     #app{flex-direction:column}
     #sidebar{width:100%;min-width:0;height:100%}
@@ -126,6 +133,10 @@
         <button class="ghost" onclick="exportJSON()">⬇ 导出</button>
         <button class="ghost" onclick="importJSON()">⬆ 导入</button>
         <button class="ghost" onclick="openSettings()">⚙ 设置</button>
+      </div>
+      <div class="myip">
+        <div class="mi-label">本机地址 <button class="ghost sm" onclick="refreshMyIp()">刷新</button></div>
+        <div id="myIpBox" class="mi-box">检测中…</div>
       </div>
     </div>
     <div id="contactList"></div>
@@ -220,11 +231,11 @@ let channelMap = new Map();    // channel -> {pc, contactId|null}
 
 function defaultStore(){
   return {
-    version:1,
+    version:2,
     identity:{ id: randId(), name:"用户"+Math.floor(Math.random()*9000+1000) },
     contacts:[],
     messages:{},
-    settings:{ stunServers:[...DEFAULT_STUN], directOnly:false }
+    settings:{ stunServers:[], directOnly:true }
   };
 }
 function loadStore(){
@@ -235,7 +246,13 @@ function loadStore(){
     if(!d.identity) d.identity = defaultStore().identity;
     if(!d.contacts) d.contacts = [];
     if(!d.messages) d.messages = {};
-    if(!d.settings || !d.settings.stunServers) d.settings = { stunServers:[...DEFAULT_STUN], directOnly:false };
+    if(!d.settings) d.settings = { stunServers:[], directOnly:true };
+    // 版本迁移：v1 的默认是 STUN，v2 起默认改为直连模式。旧的 STUN 值是历史默认而非用户显式选择，强制切到直连。
+    if(!d.version || d.version < 2){
+      d.settings.directOnly = true;
+      d.settings.stunServers = [];
+      d.version = 2;
+    }
     if(d.settings.directOnly===undefined) d.settings.directOnly = (d.settings.stunServers||[]).length===0;
     return d;
   }catch(e){ console.warn("load fail",e); return defaultStore(); }
@@ -268,6 +285,61 @@ function updateMobileView(){
 /* ===================== WebRTC ===================== */
 function iceServers(){ return (store.settings.stunServers||[]).filter(u=>u).map(u=>({urls:u})); }
 function newPC(){ return new RTCPeerConnection({ iceServers: iceServers() }); }
+
+/* 探测本机 IP（IPv4/IPv6）：用 WebRTC ICE 候选收集，host=本机地址，srflx=公网地址 */
+async function refreshMyIp(){
+  const box=document.getElementById('myIpBox');
+  if(box) box.innerHTML='<span class="mi-empty">检测中…</span>';
+  const ips={host4:new Set(),host6:new Set(),pub4:new Set(),pub6:new Set(),mdns:new Set()};
+  let pc;
+  try{
+    pc=new RTCPeerConnection({iceServers: iceServers()});
+    pc.createDataChannel('ip');
+    pc.onicecandidate=e=>{
+      if(!e.candidate||!e.candidate.candidate) return;
+      const parts=e.candidate.candidate.split(' ');
+      const addr=parts[4], typ=parts[7];
+      if(!addr||!typ) return;
+      if(addr.endsWith('.local')){ ips.mdns.add(addr); return; }
+      const v6=addr.includes(':');
+      if(typ==='host'){ (v6?ips.host6:ips.host4).add(addr); }
+      else if(typ==='srflx'){ (v6?ips.pub6:ips.pub4).add(addr); }
+    };
+    const offer=await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await waitIceComplete(pc);
+  }catch(e){ /* ignore */ }
+  finally{ try{pc&&pc.close();}catch(e){} }
+  renderMyIp(ips);
+}
+function renderMyIp(ips){
+  const box=document.getElementById('myIpBox'); if(!box) return;
+  const lines=[];
+  const push=(tag,set)=>{
+    set.forEach(a=>{
+      const ll = a.toLowerCase().startsWith('fe80')?' (链路本地)':'';
+      lines.push(`<div class="mi-line"><span class="mi-tag">${tag}</span>${escapeHtml(a)}${ll}</div>`);
+    });
+  };
+  push('IPv4',ips.host4);
+  push('IPv6',ips.host6);
+  push('公网v4',ips.pub4);
+  push('公网v6',ips.pub6);
+  let html=lines.join('');
+  if(!html){
+    if(ips.mdns.size){
+      html='<div class="mi-note">仅检测到 mDNS（*.local），真实 IP 被浏览器隐藏。跨网直连请在 chrome://flags 关闭 mDNS 混淆，或在设置启用 STUN 查看公网 IP。</div>';
+    }else{
+      html='<div class="mi-empty">未检测到 IP 地址</div>';
+    }
+  }else if(ips.mdns.size){
+    html+='<div class="mi-note">部分本地 IP 被隐藏为 mDNS，跨网直连可能需关闭 mDNS 混淆。</div>';
+  }
+  if(ips.pub4.size+ips.pub6.size===0 && (ips.host4.size+ips.host6.size>0)){
+    html+='<div class="mi-note" style="color:var(--mut)">提示：以上为本机/局域网地址。在设置启用 STUN 可探测公网 IP。</div>';
+  }
+  box.innerHTML=html;
+}
 
 function waitIceComplete(pc){
   return new Promise(res=>{
@@ -620,7 +692,8 @@ document.getElementById('fileInput').addEventListener('change', e=>{
       if(!confirm("导入将覆盖当前数据，是否继续？")) return;
       store={...defaultStore(), ...d};
       if(!store.messages) store.messages={};
-      if(!store.settings||!store.settings.stunServers) store.settings={stunServers:[...DEFAULT_STUN],directOnly:false};
+      if(!store.settings) store.settings={stunServers:[],directOnly:true};
+      if(!store.version || store.version < 2){ store.settings.directOnly=true; store.settings.stunServers=[]; store.version=2; }
       if(store.settings.directOnly===undefined) store.settings.directOnly=(store.settings.stunServers||[]).length===0;
       saveStore(); connections.clear(); currentId=null; renderAll(); toast("导入成功");
     }catch(err){ toast("导入失败: "+err.message); }
@@ -652,6 +725,7 @@ window.addEventListener('beforeunload', ()=>{ channelMap.forEach(i=>{try{i.pc.cl
 
 /* 启动 */
 renderAll();
+refreshMyIp();
 </script>
 </body>
 </html>

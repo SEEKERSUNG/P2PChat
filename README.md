@@ -44,10 +44,26 @@ P2PChat 是一个纯前端的点对点聊天应用。整个程序只有**一个 
 
 > ❌ **跨 NAT 的不同网络（如各自家里的宽带）无法直连**——因为没有 STUN/TURN 帮助穿越 NAT，host 候选为内网地址，无法在公网路由。这是仅直连模式的固有限制。
 
-注意事项：
+### 为什么仅直连模式必须关闭 mDNS
+
+WebRTC 的 ICE 连通依赖「候选」（candidate），主要有三类：
+
+| 候选 | 来源 | 是否受 mDNS 影响 |
+|------|------|------------------|
+| `host` | 本机网卡真实 IP | **受影响**，被混淆成 `*.local` |
+| `srflx` | STUN 服务器反射的地址 | 不受影响，真实可路由 |
+| `relay` | TURN 中继 | 不受影响 |
+
+- **有 STUN 时**：即便 host 候选被 mDNS 藏成 `*.local`，ICE 仍能通过 **`srflx` 候选**连通——它由 STUN 服务器返回，与本机 IP 是否暴露无关，所以 mDNS 开着也能连。
+- **仅直连（无 STUN）时**：ICE **只剩 `host` 候选**，而它被 mDNS 混淆成 `*.local`。对端发起 mDNS 查询时，在不同子网 / 组播受限 / 不同浏览器实例下常常解析不到 → 连不上。
+
+因此，**移除 STUN 后，关闭 mDNS 混淆是连通的前提条件**，而非可选优化。这也解释了「为什么旧版本开着 mDNS 也能连、改成仅直连后突然连不上」。
+
+### 注意事项
+
 - IPv6 需为**全局地址**（`2000::/3`），`fe80::` 链路本地地址仅在同一局域网有效。
 - 系统防火墙需**放行入站 UDP**（给浏览器进程加 UDP 入站规则）。
-- Chrome 默认的 **mDNS 混淆**会隐藏真实本地 IP，可能导致连不上。可在 `chrome://flags/#enable-webrtc-hide-local-ips-with-mdns` 设为 **Disabled** 以暴露真实本机 IP。Firefox 默认不混淆。
+- Chrome 默认的 **mDNS 混淆**会隐藏真实本地 IP，导致仅直连模式连不上。解决：在 `chrome://flags/#enable-webrtc-hide-local-ips-with-mdns` 设为 **Disabled** 并重启浏览器，以暴露真实本机 IP。Firefox 默认不混淆。
 
 ## 安全说明
 

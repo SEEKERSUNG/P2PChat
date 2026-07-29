@@ -93,6 +93,20 @@
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ok);color:#fff;padding:9px 18px;border-radius:8px;z-index:99;opacity:0;transition:.3s;pointer-events:none}
   .toast.show{opacity:1}
 
+  /* 未读徽章 */
+  .badge{min-width:18px;height:18px;border-radius:9px;background:var(--err);color:#fff;font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;padding:0 5px;flex:none;line-height:1}
+  /* 文件消息 */
+  .msg.file{padding:10px 12px;min-width:200px;max-width:84%}
+  .file-card{display:flex;align-items:center;gap:10px}
+  .file-card .fi{font-size:20px;flex:none}
+  .file-card .fc-info{flex:1;min-width:0}
+  .file-card .fn{font-weight:600;font-size:13px;word-break:break-all}
+  .file-card .fs{font-size:11px;opacity:.75;margin-top:2px}
+  .file-card a{color:#bcdcff}
+  .msg.out.file a,.msg.out.file .fs{color:#fff}
+  .prog{height:4px;background:rgba(255,255,255,.25);border-radius:2px;margin-top:6px;overflow:hidden}
+  .prog>i{display:block;height:100%;width:0;background:#fff;transition:width .15s}
+
   /* 移动端响应式 */
   #btnBack{display:none !important}
   .myip{margin-top:10px;font-size:11px}
@@ -145,7 +159,7 @@
   <!-- 主区 -->
   <main id="main">
     <div class="topbar">
-      <button class="ghost sm" id="btnBack" onclick="goBack()" style="display:none">‹</button>
+      <button class="ghost sm" id="btnBack" onclick="backBtn()" style="display:none">‹</button>
       <div>
         <div class="title" id="topTitle">未选择联系人</div>
         <div class="sub" id="topSub"></div>
@@ -159,6 +173,7 @@
     <div class="composer">
       <textarea id="inputMsg" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled
         onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMsg()}"></textarea>
+      <button class="ghost" onclick="pickFile()" title="发送文件" id="btnFile" disabled>📎</button>
       <button onclick="sendMsg()">发送</button>
     </div>
   </main>
@@ -181,7 +196,8 @@
   <div class="modal">
     <h2>联系人详情</h2>
     <div class="desc">修改备注与 IP（IP 为识别用，自动重连需重新交换连接码）。</div>
-    <div class="field"><label>备注名</label><input id="dName"></div>
+    <div class="field"><label>备注名</label><input id="dName" placeholder="留空则显示对方用户名"></div>
+    <div class="row"><label>对方用户名</label><span class="pill" id="dPeer">—</span></div>
     <div class="field"><label>IPv6 / IPv4 地址</label><input id="dIp" placeholder="如 2001:db8::1 或 192.168.1.5"></div>
     <div class="hint" id="dIpInfo" style="margin:-4px 0 8px">当前对端地址：—</div>
     <div class="field"><label>备注</label><textarea id="dNote" rows="3"></textarea></div>
@@ -203,13 +219,72 @@
     <div class="hint">本程序为<b>仅直连模式</b>：不使用任何 STUN/TURN，仅依赖本机 host 候选。仅适用于「同一局域网」或「双方均有公网 IP（含全局 IPv6）」。需系统防火墙放行入站 UDP；若连不上，可在 <span class="pill">chrome://flags</span> 关闭 mDNS 混淆以暴露真实本机 IP。</div>
     <div class="hint">提示：因 WebRTC 会话信息每次临时生成，已保存联系人无法凭 IP 自动重连，每次重连仍需重新交换一次连接码。</div>
     <div class="actions">
+      <button class="danger" onclick="logoutAccount()">退出账号</button>
       <button class="ghost" onclick="closeDialog('dlgSettings')">取消</button>
       <button onclick="saveSettings()">保存</button>
     </div>
   </div>
 </div>
 
+<!-- 首次启动引导 -->
+<div class="overlay" id="dlgOnboard">
+  <div class="modal">
+    <h2>欢迎使用 P2PChat 🌍</h2>
+    <div class="desc">检测到本浏览器尚无账号数据，请选择开始方式：</div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+      <button onclick="onboardNew()" style="padding:14px;font-size:15px">🆕 新建账号</button>
+      <div class="hint" style="margin:0">创建一个新身份，开始第一次连接。</div>
+      <button class="ghost" onclick="onboardImport()" style="padding:14px;font-size:15px">⬆ 导入备份（JSON）</button>
+      <div class="hint" style="margin:0">从之前导出的备份文件恢复联系人与聊天记录。</div>
+    </div>
+    <div class="hint" style="margin-top:14px;color:var(--warn)">⚠ 所有数据仅保存在本浏览器本地。退出账号或清空浏览器缓存前，请务必先导出备份，否则数据将丢失。</div>
+  </div>
+</div>
+
+<!-- 新建账号操作提示 -->
+<div class="overlay" id="dlgOnboardTips">
+  <div class="modal">
+    <h2>快速上手</h2>
+    <div class="desc">几条重要提示，可随时跳过。</div>
+    <div class="hint"><b>① 建立连接</b>：一方点「新建连接」复制邀请码发给对方，对方点「接受连接」粘贴并回发应答码，邀请方粘贴应答码即连。</div>
+    <div class="hint"><b>② 仅直连模式</b>：需双方在同一局域网或均有公网 IP；Chrome 若连不上，请在 chrome://flags 关闭 mDNS 混淆。</div>
+    <div class="hint"><b>③ 重连</b>：WebRTC 会话信息每次临时生成，断开后重连需重新交换一次连接码（联系人与记录自动保留）。</div>
+    <div class="hint" style="color:var(--warn)"><b>⚠ 数据安全</b>：聊天记录与联系人仅存于本浏览器。退出账号或清空浏览器缓存前，务必先点「⬇ 导出」备份，否则数据将永久丢失。</div>
+    <div class="actions">
+      <button class="ghost" onclick="closeDialog('dlgOnboardTips')">跳过</button>
+      <button onclick="closeDialog('dlgOnboardTips')">开始使用</button>
+    </div>
+  </div>
+</div>
+
+<!-- 退出账号确认 -->
+<div class="overlay" id="dlgLogout">
+  <div class="modal">
+    <h2>退出账号</h2>
+    <div class="desc">退出将清除当前账号在本浏览器的全部数据（联系人、聊天记录），不可撤销。请选择：</div>
+    <div class="hint" style="color:var(--warn)">⚠ 建议先导出备份，否则数据将永久丢失。</div>
+    <div class="actions" style="flex-direction:column;align-items:stretch;gap:8px">
+      <button onclick="doLogout(true)">⬇ 导出备份后退出</button>
+      <button class="danger" onclick="doLogout(false)">不备份，直接退出</button>
+      <button class="ghost" onclick="closeDialog('dlgLogout')">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 离开页面确认（移动端列表页按返回键） -->
+<div class="overlay" id="dlgExitConfirm">
+  <div class="modal">
+    <h2>退出 P2PChat？</h2>
+    <div class="desc">确定要离开本页面吗？未导出的数据仍保存在本浏览器，下次打开仍在。</div>
+    <div class="actions" style="flex-direction:column;align-items:stretch;gap:8px">
+      <button class="ghost" onclick="confirmExit(false)">继续使用</button>
+      <button class="danger" onclick="confirmExit(true)">退出</button>
+    </div>
+  </div>
+</div>
+
 <input type="file" id="fileInput" accept="application/json,.json" style="display:none">
+<input type="file" id="fileSendInput" style="display:none">
 <div class="toast" id="toast"></div>
 
 <script>
@@ -236,7 +311,8 @@ function defaultStore(){
     identity:{ id: randId(), name:"用户"+Math.floor(Math.random()*9000+1000) },
     contacts:[],
     messages:{},
-    settings:{}
+    settings:{},
+    unread:{}
   };
 }
 function loadStore(){
@@ -248,6 +324,12 @@ function loadStore(){
     if(!d.contacts) d.contacts = [];
     if(!d.messages) d.messages = {};
     if(!d.settings) d.settings = {};
+    if(!d.unread) d.unread = {};
+    // 迁移：分离「对端用户名 peerName」与「自定义备注 name」
+    d.contacts.forEach(c=>{
+      if(c.nameSet===undefined) c.nameSet=false;
+      if(c.peerName===undefined) c.peerName = c.nameSet ? '' : (c.name||'');
+    });
     d.version = 4; // v4 起仅直连，忽略历史 STUN 配置
     return d;
   }catch(e){ console.warn("load fail",e); return defaultStore(); }
@@ -264,14 +346,32 @@ function fmtTime(ts){
 
 /* ===================== 联系人 ===================== */
 function getContact(id){ return store.contacts.find(c=>c.id===id); }
+/* 显示名：有备注则「备注（用户名）」，无备注则显示用户名 */
+function contactDisplayText(c){
+  const peer = c.peerName || c.name || '未知';
+  if(c.nameSet && c.name) return `${c.name}（${peer}）`;
+  return peer;
+}
+function contactDisplayHtml(c){
+  const peer = c.peerName || c.name || '未知';
+  if(c.nameSet && c.name) return `${escapeHtml(c.name)}<span style="color:var(--mut);font-weight:400">（${escapeHtml(peer)}）</span>`;
+  return escapeHtml(peer);
+}
 function ensureContact(peerId, name){
   let c = getContact(peerId);
-  if(!c){ c={id:peerId,name:name||("联系人"+(store.contacts.length+1)),ip:"",lastSeen:0,note:""}; store.contacts.push(c); }
-  if(name && (!c.nameSet)) { c.name=name; } // 首次连接自动用对端名字
+  if(!c){ c={id:peerId,name:"",ip:"",lastSeen:0,note:"",nameSet:false,peerName:name||("用户"+Math.floor(Math.random()*9000+1000))}; store.contacts.push(c); }
+  if(name) c.peerName = name; // 每次连接同步对端账号用户名
   return c;
 }
-function selectContact(id){ currentId=id; updateMobileView(); renderContacts(); renderChat(); }
+function isMobile(){ return window.matchMedia && window.matchMedia('(max-width:680px)').matches; }
+function selectContact(id){
+  currentId=id;
+  if(store.unread[id]){ store.unread[id]=0; saveStore(); }
+  updateMobileView(); renderContacts(); renderChat();
+  if(isMobile() && id){ try{ history.pushState({p2pchat:'chat'},''); }catch(e){} } // 注入历史项，使物理返回键回到列表而非退出
+}
 function goBack(){ currentId=null; updateMobileView(); renderContacts(); renderChat(); }
+function backBtn(){ if(isMobile() && currentId){ try{ history.back(); }catch(e){ goBack(); } } else { goBack(); } }
 function updateMobileView(){
   const app=document.getElementById('app');
   if(currentId) app.classList.add('show-chat'); else app.classList.remove('show-chat');
@@ -380,7 +480,7 @@ async function quickReconnect(){
   if(connections.has(currentId)){ toast("已处于连接状态"); return; }
   // 1) 先尝试恢复
   if(revivable.has(currentId)){
-    showConnectDialog([{step:`正在尝试恢复与「${escapeHtml(c.name)}」的连接…`, body:`
+    showConnectDialog([{step:`正在尝试恢复与「${escapeHtml(contactDisplayText(c))}」的连接…`, body:`
       <p style="font-size:12px;color:var(--mut)">尝试复用上一次尚存的直连通道，无需交换码（仅双方页面都未关闭时可能成功）…</p>
       <div class="mi-note" id="reviveStatus">尝试中…</div>`}]);
     const ok = await attemptRevive(currentId);
@@ -390,7 +490,7 @@ async function quickReconnect(){
   }
   // 2) 回退到手动交换
   showConnectDialog([
-    {step:`重新交换连接码 · 与「${escapeHtml(c.name)}」重连`, body:`
+    {step:`重新交换连接码 · 与「${escapeHtml(contactDisplayText(c))}」重连`, body:`
       <p style="font-size:12px;color:var(--mut)">恢复失败（页面已刷新或对端已关闭）。因 WebRTC 会话信息每次临时生成，需双方重新交换一次连接码。联系人信息与历史记录会自动延续。</p>
       <div class="row">
         <button onclick="startInvite()">我发起（生成邀请码）</button>
@@ -492,6 +592,7 @@ async function acceptOffer(){
 }
 
 function bindChannel(channel, pc, knownPeerId, knownPeerName){
+  channel.binaryType='arraybuffer'; // 接收文件分块用 ArrayBuffer
   channelMap.set(channel, {pc, contactId: knownPeerId||null});
   channel.onopen = ()=> onChannelOpen(channel, knownPeerId, knownPeerName);
   channel.onmessage = e=> onChannelMsg(channel, e.data);
@@ -516,8 +617,25 @@ function onChannelOpen(channel, peerId, peerName){
   }
 }
 function onChannelMsg(channel, data){
+  // 二进制：文件分块
+  if(typeof data !== 'string'){
+    const info=channelMap.get(channel);
+    if(info && info.incomingFile){
+      info.incomingFile.chunks.push(data);
+      info.incomingFile.received += data.byteLength;
+      updateFileProgress(info.incomingFile.fid);
+    }
+    return;
+  }
   let m; try{ m=JSON.parse(data); }catch{ return; }
   if(m.type==='hello'){
+    const info=channelMap.get(channel);
+    // 已连接的同联系人发来 hello（用户改名同步）：仅更新用户名，不重走连接流程
+    if(info && info.contactId && info.contactId===m.identity.id && connections.has(info.contactId)){
+      const c=getContact(info.contactId);
+      if(c){ c.peerName=m.identity.name||c.peerName; c.lastSeen=nowTs(); saveStore(); renderContacts(); if(info.contactId===currentId) renderTopbar(); }
+      return;
+    }
     finalizeChannel(channel, m.identity.id, m.identity.name);
     return;
   }
@@ -525,6 +643,8 @@ function onChannelMsg(channel, data){
   const cId = info && info.contactId;
   if(!cId) return; // 身份未确认前丢弃业务消息
   if(m.type==='msg'){ addMessage(cId, 'in', m.text, m.ts); }
+  else if(m.type==='file-meta'){ startReceiveFile(cId, info, m); }
+  else if(m.type==='file-end'){ finishReceiveFile(cId, info, m.fid); }
   else if(m.type==='bye'){ appendSys(cId,"对方已断开"); peerBye.add(cId); }
 }
 function finalizeChannel(channel, peerId, peerName){
@@ -547,7 +667,7 @@ function finalizeChannel(channel, peerId, peerName){
   closeDialog('dlgConnect');
   selectContact(peerId);
   if(!oldId) appendSys(peerId, "✅ 已建立加密直连");
-  toast("已连接 "+c.name);
+  toast("已连接 "+contactDisplayText(c));
 }
 function currentConnId(){ // 当前选中且已连接
   if(currentId && connections.has(currentId)) return currentId;
@@ -641,6 +761,7 @@ function addMessage(contactId, dir, text, ts){
   if(!store.messages[contactId]) store.messages[contactId]=[];
   store.messages[contactId].push({ts:ts||nowTs(), dir, text});
   const c=getContact(contactId); if(c) c.lastSeen=ts||nowTs();
+  if(dir==='in' && contactId!==currentId){ store.unread[contactId]=(store.unread[contactId]||0)+1; }
   saveStore();
   if(contactId===currentId) renderMessages();
   renderContacts();
@@ -650,6 +771,98 @@ function appendSys(contactId, text){
   store.messages[contactId].push({ts:nowTs(), dir:'sys', text});
   saveStore();
   if(contactId===currentId) renderMessages();
+}
+
+/* ===================== 文件传输 ===================== */
+const FILE_CHUNK = 16*1024;            // 16KB 分块（兼容 SCTP 默认消息上限）
+const FILE_BUF_HIGH = 8*1024*1024;     // 背压高水位 8MB
+const fileTransfers = new Map();       // fid -> {received,size,dir,contactId,name} 进度（出/入共用）
+const fileUrls = new Map();            // fid -> objectURL（运行时下载链接，不持久化）
+
+function pickFile(){ document.getElementById('fileSendInput').click(); }
+document.getElementById('fileSendInput').addEventListener('change', e=>{
+  const f=e.target.files[0]; e.target.value=''; if(!f) return;
+  sendFile(f);
+});
+function fmtSize(n){
+  if(n<1024) return n+' B';
+  if(n<1048576) return (n/1024).toFixed(1)+' KB';
+  if(n<1073741824) return (n/1048576).toFixed(1)+' MB';
+  return (n/1073741824).toFixed(2)+' GB';
+}
+async function sendFile(file){
+  const cId=currentConnId();
+  if(!cId || !connections.has(cId)) return toast("未连接，无法发送文件");
+  const channel=connections.get(cId);
+  if(!channel.bufferedAmountLowThreshold || channel.bufferedAmountLowThreshold<1*1024*1024) channel.bufferedAmountLowThreshold=1*1024*1024;
+  const fid=randId();
+  const meta={type:"file-meta", fid, name:file.name, size:file.size, mime:file.type||'application/octet-stream'};
+  try{ channel.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
+  fileTransfers.set(fid,{received:0,size:file.size,dir:'out',contactId:cId,name:file.name});
+  addFileMessage(cId,'out',meta);
+  let offset=0;
+  try{
+    while(offset<file.size){
+      const buf=await file.slice(offset, offset+FILE_CHUNK).arrayBuffer();
+      // 背压：缓冲过高时等 bufferedamountlow 事件
+      while(channel.bufferedAmount > FILE_BUF_HIGH){
+        await new Promise(r=>{ const h=()=>{channel.removeEventListener('bufferedamountlow',h); r();}; channel.addEventListener('bufferedamountlow',h); });
+      }
+      channel.send(buf);
+      offset+=buf.byteLength;
+      const st=fileTransfers.get(fid); if(st){ st.received=offset; updateFileProgress(fid); }
+    }
+    channel.send(JSON.stringify({type:"file-end", fid}));
+  }catch(e){ toast("文件发送失败: "+e.message); }
+  finally{ fileTransfers.delete(fid); }
+}
+function startReceiveFile(cId, info, m){
+  info.incomingFile={fid:m.fid, name:m.name, size:m.size, mime:m.mime, received:0, chunks:[]};
+  fileTransfers.set(m.fid,{received:0,size:m.size,dir:'in',contactId:cId,name:m.name});
+  addFileMessage(cId,'in',m);
+}
+function finishReceiveFile(cId, info, fid){
+  const inc=info.incomingFile; info.incomingFile=null;
+  fileTransfers.delete(fid);
+  if(!inc || inc.fid!==fid) return;
+  const blob=new Blob(inc.chunks,{type:inc.mime||'application/octet-stream'});
+  fileUrls.set(fid, URL.createObjectURL(blob));
+  if(cId===currentId){
+    const el=document.getElementById('file-'+fid);
+    if(el) renderFileCardInto(el,{fid,name:inc.name,size:inc.size,dir:'in'});
+  }
+}
+function addFileMessage(contactId, dir, meta){
+  if(!store.messages[contactId]) store.messages[contactId]=[];
+  const item={ts:nowTs(), dir, file:{fid:meta.fid, name:meta.name, size:meta.size}};
+  store.messages[contactId].push(item);
+  const c=getContact(contactId); if(c) c.lastSeen=item.ts;
+  if(dir==='in' && contactId!==currentId){ store.unread[contactId]=(store.unread[contactId]||0)+1; }
+  saveStore();
+  if(contactId===currentId) renderMessages();
+  renderContacts();
+}
+function renderFileCardInto(el, f){
+  const st=fileTransfers.get(f.fid);
+  const url=fileUrls.get(f.fid);
+  const transferring=!!st;
+  const pct = st && st.size ? Math.min(100, Math.round(st.received/st.size*100)) : 0;
+  let right='';
+  if(url){ right=`<a href="${url}" download="${escapeHtml(f.name)}">下载</a>`; }
+  else if(f.dir==='out' && !transferring){ right=`<span class="fs">已发送</span>`; }
+  else if(f.dir==='in' && !transferring){ right=`<span class="fs">（已失效）</span>`; }
+  const info = transferring
+    ? `<div class="fs"><span class="fl-pct">${pct}%</span> · ${fmtSize(st.received)}/${fmtSize(f.size)}</div><div class="prog"><i style="width:${pct}%"></i></div>`
+    : `<div class="fs">${fmtSize(f.size)}</div>`;
+  el.innerHTML=`<div class="file-card"><span class="fi">📎</span><div class="fc-info"><div class="fn">${escapeHtml(f.name)}</div>${info}</div><div>${right}</div></div>`;
+}
+function updateFileProgress(fid){
+  const st=fileTransfers.get(fid); if(!st) return;
+  if(st.contactId!==currentId) return;
+  const el=document.getElementById('file-'+fid); if(!el) return;
+  const pct = st.size ? Math.min(100, Math.round(st.received/st.size*100)) : 100;
+  const prog=el.querySelector('.prog>i'); if(prog) prog.style.width=pct+'%';
+  const lp=el.querySelector('.fl-pct'); if(lp) lp.textContent=pct+'%';
 }
 
 /* ===================== 渲染 ===================== */
@@ -667,10 +880,11 @@ function renderContacts(){
     const div=document.createElement('div');
     div.className='contact'+(c.id===currentId?' active':'');
     const last = c.lastSeen? fmtTime(c.lastSeen):'';
+    const u = store.unread[c.id]||0;
     div.innerHTML=`<span class="dot${connections.has(c.id)?' on':''}"></span>
-      <div class="c-main"><div class="c-name">${escapeHtml(c.name)}</div>
+      <div class="c-main"><div class="c-name">${contactDisplayHtml(c)}</div>
       <div class="c-ip">${c.ip?escapeHtml(c.ip):'未知 IP'}</div></div>
-      <div class="c-time">${last}</div>`;
+      <div class="c-time">${u?`<span class="badge">${u>99?'99+':u}</span>`:last}</div>`;
     div.onclick=()=>selectContact(c.id);
     list.appendChild(div);
   }
@@ -680,14 +894,15 @@ function renderTopbar(){
   const btn=document.getElementById('btnDetail');
   const rc=document.getElementById('btnReconnect');
   const ta=document.getElementById('inputMsg');
-  if(!currentId){ document.getElementById('topTitle').textContent='未选择联系人'; document.getElementById('topSub').textContent=''; document.getElementById('topStatus').textContent=''; document.getElementById('topStatus').className='status'; btn.style.display='none'; rc.style.display='none'; ta.disabled=true; document.getElementById('messages').innerHTML=emptyHtml(); return; }
+  const bf=document.getElementById('btnFile');
+  if(!currentId){ document.getElementById('topTitle').textContent='未选择联系人'; document.getElementById('topSub').textContent=''; document.getElementById('topStatus').textContent=''; document.getElementById('topStatus').className='status'; btn.style.display='none'; rc.style.display='none'; ta.disabled=true; if(bf) bf.disabled=true; document.getElementById('messages').innerHTML=emptyHtml(); return; }
   const c=getContact(currentId); if(!c) return;
-  document.getElementById('topTitle').textContent=c.name;
+  document.getElementById('topTitle').textContent=contactDisplayText(c);
   document.getElementById('topSub').textContent=c.ip||'未知 IP';
   const st=document.getElementById('topStatus');
   const connected=connections.has(currentId);
-  if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; }
-  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=true; }
+  if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; if(bf) bf.disabled=false; }
+  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=true; if(bf) bf.disabled=true; }
   btn.style.display='';
   rc.style.display= connected? 'none':'inline-block'; // 仅未连接时显示重连按钮
   if(!connected && !hasMessages(currentId)) document.getElementById('messages').innerHTML=notConnHtml();
@@ -701,6 +916,11 @@ function renderMessages(){
   for(const m of arr){
     const el=document.createElement('div');
     if(m.dir==='sys'){ el.className='sys'; el.textContent=m.text; }
+    else if(m.file){
+      el.className='msg file '+(m.dir==='out'?'out':'in');
+      el.id='file-'+m.file.fid;
+      renderFileCardInto(el, {fid:m.file.fid, name:m.file.name, size:m.file.size, dir:m.dir});
+    }
     else{ el.className='msg '+(m.dir==='out'?'out':'in'); el.innerHTML=escapeHtml(m.text)+`<div class="t">${fmtTime(m.ts)}</div>`; }
     box.appendChild(el);
   }
@@ -733,7 +953,8 @@ function closeDialog(id){ document.getElementById(id).classList.remove('show'); 
 function openDetail(){
   if(!currentId) return;
   const c=getContact(currentId);
-  document.getElementById('dName').value=c.name;
+  document.getElementById('dName').value= c.nameSet ? (c.name||'') : '';
+  document.getElementById('dPeer').textContent= c.peerName || '（连接后同步）';
   document.getElementById('dIp').value=c.ip||'';
   document.getElementById('dNote').value=c.note||'';
   document.getElementById('dSeen').textContent=c.lastSeen? new Date(c.lastSeen).toLocaleString():'—';
@@ -751,10 +972,11 @@ function renderDetailIpInfo(c){
 }
 function saveDetail(){
   const c=getContact(currentId); if(!c) return;
-  c.name=document.getElementById('dName').value.trim()||c.name;
+  const nm=document.getElementById('dName').value.trim();
+  c.name=nm;
+  c.nameSet=!!nm; // 有备注才标记，空则回退显示对方用户名
   c.ip=document.getElementById('dIp').value.trim();
   c.note=document.getElementById('dNote').value;
-  c.nameSet=true; // 用户已自定义，后续不被对端名字覆盖
   saveStore(); renderAll(); closeDialog('dlgDetail'); toast("已保存");
 }
 function deleteContact(){
@@ -779,18 +1001,69 @@ function openSettings(){
   document.getElementById('dlgSettings').classList.add('show');
 }
 function saveSettings(){
-  store.identity.name=document.getElementById('setName').value.trim()||store.identity.name;
+  const newName=document.getElementById('setName').value.trim();
+  const changed = !!newName && newName!==store.identity.name;
+  if(changed) store.identity.name=newName;
   saveStore(); renderIdentity(); closeDialog('dlgSettings'); toast("已保存");
+  if(changed){ // 向所有已连接联系人同步新名字（对端收到 hello 即更新）
+    const hello=JSON.stringify({type:"hello", identity: store.identity});
+    connections.forEach(ch=>{ try{ ch.send(hello); }catch(e){} });
+  }
+}
+
+/* ===================== 账号引导 / 退出 ===================== */
+let onboarding=false; // 引导态：导入成功后需关闭引导弹窗
+function boot(){
+  renderAll();
+  refreshMyIp();
+  if(isMobile()){ try{ history.pushState({p2pchat:'root'},''); }catch(e){} } // 注入根历史项，拦截列表页返回键
+  if(!localStorage.getItem(STORE_KEY)){ showOnboard(); } // 首次启动无数据 → 引导
+}
+function showOnboard(){ document.getElementById('dlgOnboard').classList.add('show'); }
+function onboardNew(){
+  saveStore(); // 持久化新身份
+  closeDialog('dlgOnboard');
+  document.getElementById('dlgOnboardTips').classList.add('show'); // 操作提示（可跳过）
+}
+function onboardImport(){ onboarding=true; importJSON(); }
+function logoutAccount(){
+  closeDialog('dlgSettings');
+  document.getElementById('dlgLogout').classList.add('show');
+}
+async function doLogout(backup){
+  closeDialog('dlgLogout');
+  if(backup) await exportJSON(); // 退出前导出一份备份（await 确保导出完成再清数据）
+  localStorage.removeItem(STORE_KEY);
+  channelMap.forEach(i=>{try{i.pc.close();}catch(e){}});
+  connections.clear(); channelMap.clear(); revivable.clear(); peerBye.clear();
+  autoReviveTimers.forEach(t=>clearTimeout(t)); autoReviveTimers.clear();
+  currentId=null; clearConnectWatchdog();
+  store=defaultStore(); // 内存占位，不保存 → 保持 localStorage 为空，下次启动仍引导
+  renderAll();
+  showOnboard();
+  toast(backup?"已导出备份并退出账号":"已退出账号");
 }
 
 /* ===================== 导入导出 ===================== */
-function exportJSON(){
+async function exportJSON(){
   const blob=new Blob([JSON.stringify(store,null,2)],{type:'application/json'});
-  const a=document.createElement('a');
   const d=new Date(); const p=n=>String(n).padStart(2,'0');
-  a.download=`p2pchat-backup-${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}.json`;
-  a.href=URL.createObjectURL(blob); a.click();
-  URL.revokeObjectURL(a.href); toast("已导出");
+  const filename=`p2pchat-backup-${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}.json`;
+  // 移动端优先 Web Share API：弹出系统分享/保存菜单，体验最可靠
+  const file=new File([blob],filename,{type:'application/json'});
+  try{
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:'P2PChat 备份', text:filename});
+      toast("已导出"); return;
+    }
+  }catch(e){ if(e && e.name==='AbortError') return; /* 用户取消则结束，否则回退到下载 */ }
+  // 回退：a[download]，需挂到 DOM 才能在部分移动浏览器触发
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=filename; a.rel='noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  toast("已导出；若未弹出下载，请用系统浏览器打开本页再导出");
 }
 function importJSON(){ document.getElementById('fileInput').click(); }
 document.getElementById('fileInput').addEventListener('change', e=>{
@@ -800,12 +1073,14 @@ document.getElementById('fileInput').addEventListener('change', e=>{
     try{
       const d=JSON.parse(r.result);
       if(!d.identity || !Array.isArray(d.contacts)) throw new Error("格式不符");
-      if(!confirm("导入将覆盖当前数据，是否继续？")) return;
+      if(!confirm("导入将覆盖当前数据，是否继续？")){ onboarding=false; return; }
       store={...defaultStore(), ...d};
       if(!store.messages) store.messages={};
       if(!store.settings) store.settings={};
+      if(!store.unread) store.unread={};
       store.version=4; // 仅直连，忽略历史 STUN 配置
       saveStore(); connections.clear(); currentId=null; renderAll(); toast("导入成功");
+      if(onboarding){ onboarding=false; closeDialog('dlgOnboard'); }
     }catch(err){ toast("导入失败: "+err.message); }
   };
   r.readAsText(f); e.target.value='';
@@ -831,11 +1106,21 @@ function toast(msg, ms){
   clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.classList.remove('show'), ms||2200);
 }
 
+let exitAllowed=false; // 用户已在退出确认中选择"退出"，放行浏览器返回
+window.addEventListener('popstate', ()=>{
+  if(currentId){ goBack(); return; } // 聊天视图 → 回到列表
+  if(isMobile() && !exitAllowed){ showExitConfirm(); return; } // 列表视图 → 拦截退出，弹确认
+});
+function showExitConfirm(){ document.getElementById('dlgExitConfirm').classList.add('show'); }
+function confirmExit(yes){
+  closeDialog('dlgExitConfirm');
+  if(yes){ exitAllowed=true; try{ history.back(); }catch(e){} } // 放行，离开页面
+  else { try{ history.pushState({p2pchat:'root'},''); }catch(e){} } // 取消：重新拦截下次返回
+}
 window.addEventListener('beforeunload', ()=>{ channelMap.forEach(i=>{try{i.pc.close();}catch(e){}}); });
 
 /* 启动 */
-renderAll();
-refreshMyIp();
+boot();
 </script>
 </body>
 </html>

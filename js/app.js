@@ -687,7 +687,8 @@ function renderFileCardInto(el, f){
   const info = transferring
     ? `<div class="fs"><span class="fl-pct">${pct}%</span> · ${fmtSize(st.received)}/${fmtSize(f.size)}</div><div class="prog"><i style="width:${pct}%"></i></div>`
     : `<div class="fs">${fmtSize(f.size)}</div>`;
-  el.innerHTML=`<div class="file-card"><span class="fi">📎</span><div class="fc-info"><div class="fn">${escapeHtml(f.name)}</div>${info}</div><div>${right}</div></div>`;
+  const readTag = f.dir==='out' && f.ts ? `<span class="read-tag" data-ts="${f.ts}"></span>` : '';
+  el.innerHTML=`<div class="file-card"><span class="fi">📎</span><div class="fc-info"><div class="fn">${escapeHtml(f.name)}</div>${info}</div><div>${right}${readTag}</div></div>`;
 }
 function updateFileProgress(fid){
   const st=fileTransfers.get(fid); if(!st) return;
@@ -713,6 +714,7 @@ async function sendImage(file){
   const meta={type:"image-meta", iid, name:file.name, size:file.size, mime:file.type||'image/png'};
   try{ channel.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
   imageTransfers.set(iid,{received:0,size:file.size,dir:'out',contactId:cId,name:file.name});
+  imageUrls.set(iid, URL.createObjectURL(file)); // 发送方立即显示缩略图
   addImageMessage(cId,'out',meta);
   let offset=0;
   try{
@@ -768,7 +770,8 @@ function renderImageInto(el, img){
   }else{
     body=`<div class="img-expired">（图片已失效 · ${fmtSize(img.size)}）</div>`;
   }
-  el.innerHTML=body+(url?`<div class="img-info">${fmtTime(nowTs())}</div>`:'');
+  const readTag = img.dir==='out' && img.ts ? `<span class="read-tag" data-ts="${img.ts}"></span>` : '';
+  el.innerHTML=body+`<div class="img-info">${fmtTime(img.ts||nowTs())}${readTag}</div>`;
 }
 function updateImageProgress(iid){
   const st=imageTransfers.get(iid); if(!st) return;
@@ -834,12 +837,12 @@ function renderMessages(){
     else if(m.file){
       el.className='msg file '+(m.dir==='out'?'out':'in');
       el.id='file-'+m.file.fid;
-      renderFileCardInto(el, {fid:m.file.fid, name:m.file.name, size:m.file.size, dir:m.dir});
+      renderFileCardInto(el, {fid:m.file.fid, name:m.file.name, size:m.file.size, dir:m.dir, ts:m.ts});
     }
     else if(m.image){
       el.className='msg image '+(m.dir==='out'?'out':'in');
       el.id='img-'+m.image.iid;
-      renderImageInto(el, {iid:m.image.iid, name:m.image.name, size:m.image.size, dir:m.dir});
+      renderImageInto(el, {iid:m.image.iid, name:m.image.name, size:m.image.size, dir:m.dir, ts:m.ts});
     }
     else{ el.className='msg '+(m.dir==='out'?'out':'in'); el.dataset.ts=m.ts; el.innerHTML=escapeHtml(m.text)+`<div class="t">${fmtTime(m.ts)}${m.dir==='out'?`<span class="read-tag" data-ts="${m.ts}"></span>`:''}</div>`; }
     box.appendChild(el);

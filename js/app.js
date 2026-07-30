@@ -609,13 +609,17 @@ const fileUrls = new Map();            // fid -> objectURL（运行时下载链�
 
 function pickFile(){ document.getElementById('fileSendInput').click(); }
 document.getElementById('fileSendInput').addEventListener('change', e=>{
-  const f=e.target.files[0]; e.target.value=''; if(!f) return;
-  sendFile(f);
+  try{
+    const f=e.target.files[0]; e.target.value=''; if(!f) return;
+    sendFile(f).catch(err=>{ console.error('sendFile:',err); toast('文件发送异常'); });
+  }catch(err){ console.error('file input:',err); toast('操作失败'); }
 });
 /* 图片发送 input 监听 */
 document.getElementById('imageSendInput').addEventListener('change', e=>{
-  const f=e.target.files[0]; e.target.value=''; if(!f) return;
-  sendImage(f);
+  try{
+    const f=e.target.files[0]; e.target.value=''; if(!f) return;
+    sendImage(f).catch(err=>{ console.error('sendImage:',err); toast('图片发送异常'); });
+  }catch(err){ console.error('image input:',err); toast('操作失败'); }
 });
 function fmtSize(n){
   if(n<1024) return n+' B';
@@ -763,7 +767,7 @@ function renderImageInto(el, img){
   const transferring=!!st;
   let body='';
   if(url){
-    body=`<img src="${url}" alt="${escapeHtml(img.name)}" onclick="window.open('${url}')" title="点击查看原图">`;
+    body=`<img src="${url}" alt="${escapeHtml(img.name)}" onclick="if(this.src)window.open(this.src)" title="点击查看原图">`;
   }else if(transferring){
     const pct = st && st.size ? Math.min(100, Math.round(st.received/st.size*100)) : 0;
     body=`<div class="img-expired"><div style="text-align:center"><span class="spinner" style="margin-right:6px"></span>${pct}%</div></div>`;
@@ -999,23 +1003,26 @@ async function exportJSON(){
 }
 function importJSON(){ document.getElementById('fileInput').click(); }
 document.getElementById('fileInput').addEventListener('change', e=>{
-  const f=e.target.files[0]; if(!f) return;
-  const r=new FileReader();
-  r.onload=()=>{
-    try{
-      const d=JSON.parse(r.result);
-      if(!d.identity || !Array.isArray(d.contacts)) throw new Error("格式不符");
-      if(!confirm("导入将覆盖当前数据，是否继续？")){ onboarding=false; return; }
-      store={...defaultStore(), ...d};
-      if(!store.messages) store.messages={};
-      if(!store.settings) store.settings={};
-      if(!store.unread) store.unread={};
-      store.version=4; // 仅直连，忽略历史 STUN 配置
-      saveStore(); connections.clear(); currentId=null; renderAll(); toast("导入成功");
-      if(onboarding){ onboarding=false; closeDialog('dlgOnboard'); }
-    }catch(err){ toast("导入失败: "+err.message); }
-  };
-  r.readAsText(f); e.target.value='';
+  try{
+    const f=e.target.files[0]; if(!f) return;
+    const r=new FileReader();
+    r.onload=()=>{
+      try{
+        const d=JSON.parse(r.result);
+        if(!d.identity || !Array.isArray(d.contacts)) throw new Error("格式不符");
+        if(!confirm("导入将覆盖当前数据，是否继续？")){ onboarding=false; return; }
+        store={...defaultStore(), ...d};
+        if(!store.messages) store.messages={};
+        if(!store.settings) store.settings={};
+        if(!store.unread) store.unread={};
+        store.version=4; // 仅直连，忽略历史 STUN 配置
+        saveStore(); connections.clear(); currentId=null; renderAll(); toast("导入成功");
+        if(onboarding){ onboarding=false; closeDialog('dlgOnboard'); }
+      }catch(err){ toast("导入失败: "+err.message); }
+    };
+    r.onerror=()=>{ toast("文件读取失败"); };
+    r.readAsText(f); e.target.value='';
+  }catch(err){ console.error('import input:',err); toast('操作失败'); }
 });
 
 /* ===================== 工具 ===================== */

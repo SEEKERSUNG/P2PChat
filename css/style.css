@@ -1,0 +1,135 @@
+﻿:root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --txt:#e6e8ee; --mut:#8b93a7; --acc:#4c8dff; --acc2:#2f6fe0;
+    --ok:#37d27a; --warn:#f0a93b; --err:#ef5454;
+    --bubble-out:#2f6fe0; --bubble-in:#262b36;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--bg);color:var(--txt);
+    font-family:"Segoe UI",-apple-system,"Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;
+    font-size:14px;line-height:1.5;overflow:hidden;
+  }
+  button{font-family:inherit;font-size:13px;cursor:pointer;border:none;border-radius:8px;padding:8px 12px;color:#fff;background:var(--acc);transition:.15s}
+  button:hover{background:var(--acc2)}
+  button.ghost{background:transparent;color:var(--txt);border:1px solid var(--line)}
+  button.ghost:hover{background:var(--panel2)}
+  button.danger{background:var(--err)}
+  button.sm{padding:5px 9px;font-size:12px}
+  input,textarea{font-family:inherit;font-size:13px;background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px 10px;outline:none}
+  input:focus,textarea:focus{border-color:var(--acc)}
+  textarea{resize:vertical}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#333a47;border-radius:6px}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  #app{display:flex;height:100vh;width:100vw}
+
+  /* 侧栏 */
+  #sidebar{width:300px;min-width:300px;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column}
+  .side-head{padding:12px;border-bottom:1px solid var(--line)}
+  .side-head h1{font-size:16px;margin:0 0 10px;display:flex;align-items:center;gap:8px}
+  .side-head .me{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mut)}
+  .gh-link{margin-left:auto;font-size:12px;color:var(--mut);text-decoration:none}
+.ver{font-size:10px;color:var(--mut);font-weight:400;opacity:.5}
+  .gh-link:hover{color:var(--acc)}
+  .side-head .me b{color:var(--txt)}
+  .toolbar{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  #contactList{flex:1;overflow-y:auto;padding:6px}
+  .contact{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer;margin-bottom:2px}
+  .contact:hover{background:var(--panel2)}
+  .contact.active{background:var(--panel2)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--mut);flex:none}
+  .dot.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+  .c-main{flex:1;min-width:0}
+  .c-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .c-ip{font-size:11px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:Consolas,monospace}
+  .c-time{font-size:10px;color:var(--mut);flex:none}
+
+  /* 主区 */
+  #main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .topbar{height:52px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;padding:0 14px;background:var(--panel)}
+  .topbar .title{font-weight:600}
+  .topbar .sub{font-size:11px;color:var(--mut);font-family:Consolas,monospace}
+  .topbar .spacer{flex:1}
+  .status{font-size:11px;padding:3px 8px;border-radius:10px;background:var(--panel2);color:var(--mut)}
+  .status.connected{color:var(--ok)}
+  .status.connecting{color:var(--warn)}
+  #messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px}
+  .msg{max-width:72%;padding:8px 12px;border-radius:12px;word-break:break-word;white-space:pre-wrap}
+  .msg.out{align-self:flex-end;background:var(--bubble-out);color:#fff;border-bottom-right-radius:4px}
+  .msg.in{align-self:flex-start;background:var(--bubble-in);border-bottom-left-radius:4px}
+  .msg .t{font-size:10px;opacity:.7;margin-top:3px}
+  .sys{align-self:center;font-size:11px;color:var(--mut);background:var(--panel2);padding:3px 10px;border-radius:10px}
+  #empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--mut);text-align:center;padding:20px}
+  #empty h2{color:var(--txt);font-weight:600}
+  .composer{border-top:1px solid var(--line);padding:10px;display:flex;gap:8px;background:var(--panel)}
+  #inputMsg{flex:1;min-height:42px;max-height:120px}
+  #inputMsg:disabled{opacity:.5}
+  .notconn{padding:18px;margin:14px;border:1px dashed var(--line);border-radius:10px;text-align:center;color:var(--mut)}
+  .notconn button{margin:0 4px}
+
+  /* 模态 */
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50}
+  .overlay.show{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:560px;max-width:94vw;max-height:90vh;overflow:auto;padding:20px}
+  .modal h2{margin:0 0 6px;font-size:17px}
+  .modal .desc{color:var(--mut);font-size:12px;margin-bottom:14px}
+  .modal .step{font-size:12px;color:var(--acc);font-weight:600;margin-bottom:6px}
+  .codebox{width:100%;height:120px;font-family:Consolas,monospace;font-size:11px;word-break:break-all}
+  .row{display:flex;gap:8px;align-items:center;margin:10px 0}
+  .row label{width:80px;color:var(--mut);font-size:12px;flex:none}
+  .row input{flex:1}
+  .modal .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+  .hint{font-size:11px;color:var(--mut);background:var(--panel2);padding:8px 10px;border-radius:8px;margin-top:10px}
+  .field{margin:8px 0}
+  .field label{display:block;font-size:12px;color:var(--mut);margin-bottom:4px}
+  .pill{font-size:11px;color:var(--mut);font-family:Consolas,monospace;background:var(--panel2);padding:2px 6px;border-radius:6px}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ok);color:#fff;padding:9px 18px;border-radius:8px;z-index:99;opacity:0;transition:.3s;pointer-events:none}
+  .toast.show{opacity:1}
+
+  /* 生成中 loading */
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--acc);border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .gen-loading{display:flex;align-items:center;gap:8px;padding:14px 4px;color:var(--mut);font-size:12px}
+
+  /* 未读徽章 */
+  .badge{min-width:18px;height:18px;border-radius:9px;background:var(--err);color:#fff;font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;padding:0 5px;flex:none;line-height:1}
+  /* 文件消息 */
+  .msg.file{padding:10px 12px;min-width:200px;max-width:84%}
+  .file-card{display:flex;align-items:center;gap:10px}
+  .file-card .fi{font-size:20px;flex:none}
+  .file-card .fc-info{flex:1;min-width:0}
+  .file-card .fn{font-weight:600;font-size:13px;word-break:break-all}
+  .file-card .fs{font-size:11px;opacity:.75;margin-top:2px}
+  .file-card a{color:#bcdcff}
+  .msg.out.file a,.msg.out.file .fs{color:#fff}
+  .prog{height:4px;background:rgba(255,255,255,.25);border-radius:2px;margin-top:6px;overflow:hidden}
+  .prog>i{display:block;height:100%;width:0;background:#fff;transition:width .15s}
+
+  /* 移动端响应式 */
+  #btnBack{display:none !important}
+  .myip{margin-top:10px;font-size:11px}
+  .mi-label{color:var(--mut);margin-bottom:5px;display:flex;align-items:center;gap:6px}
+  .mi-box{background:var(--panel2);border-radius:8px;padding:8px 9px;min-height:18px}
+  .mi-line{font-family:Consolas,monospace;margin:3px 0;word-break:break-all;line-height:1.4}
+  .mi-tag{display:inline-block;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:10px;color:var(--mut);margin-right:6px;vertical-align:middle}
+  .mi-empty{color:var(--mut)}
+  .mi-note{color:var(--warn);margin-top:5px;font-family:inherit}
+  @media (max-width:680px){
+    #app{flex-direction:column}
+    #sidebar{width:100%;min-width:0;height:100%}
+    #main{position:fixed;inset:0;width:100%;height:100%;background:var(--bg);transform:translateX(100%);transition:transform .22s ease;z-index:20}
+    #app.show-chat #main{transform:translateX(0)}
+    #app.show-chat #sidebar{display:none}
+    #btnBack{display:inline-block !important;font-size:20px;padding:2px 10px;line-height:1}
+    .side-head h1{font-size:15px}
+    .toolbar button{padding:7px 10px;font-size:12px}
+    .modal{width:100%;border-radius:0}
+    .overlay{align-items:flex-end}
+    .codebox{height:90px}
+    .msg{max-width:84%}
+    .topbar{height:48px}
+    .topbar .sub{max-width:40vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  }

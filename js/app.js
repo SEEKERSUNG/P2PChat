@@ -89,6 +89,7 @@ function selectContact(id){
   currentId=id;
   if(store.unread[id]){ store.unread[id]=0; saveStore(); }
   updateMobileView(); renderContacts(); renderChat();
+  if(id && connections.has(id)) sendReadReceipt(id); // 选中已连接联系人时发已读回执
   if(isMobile() && id){ try{ history.pushState({p2pchat:'chat'},''); }catch(e){} } // 注入历史项，使物理返回键回到列表而非退出
 }
 function goBack(){ currentId=null; updateMobileView(); renderContacts(); renderChat(); }
@@ -391,13 +392,17 @@ function onChannelOpen(channel, peerId, peerName){
   }
 }
 function onChannelMsg(channel, data){
-  // 二进制：文件分块
+  // 二进制：文件/图片分块
   if(typeof data !== 'string'){
     const info=channelMap.get(channel);
     if(info && info.incomingFile){
       info.incomingFile.chunks.push(data);
       info.incomingFile.received += data.byteLength;
       updateFileProgress(info.incomingFile.fid);
+    }else if(info && info.incomingImage){
+      info.incomingImage.chunks.push(data);
+      info.incomingImage.received += data.byteLength;
+      updateImageProgress(info.incomingImage.iid);
     }
     return;
   }
@@ -416,9 +421,15 @@ function onChannelMsg(channel, data){
   const info = channelMap.get(channel);
   const cId = info && info.contactId;
   if(!cId) return; // 身份未确认前丢弃业务消息
-  if(m.type==='msg'){ addMessage(cId, 'in', m.text, m.ts); }
+  if(m.type==='msg'){ addMessage(cId, 'in', m.text, m.ts); if(cId===currentId) sendReadReceipt(cId); }
   else if(m.type==='file-meta'){ startReceiveFile(cId, info, m); }
   else if(m.type==='file-end'){ finishReceiveFile(cId, info, m.fid); }
+  else if(m.type==='image-meta'){ startReceiveImage(cId, info, m); }
+  else if(m.type==='image-end'){ finishReceiveImage(cId, info, m.iid); }
+  else if(m.type==='read'){
+    const c = getContact(cId);
+    if(c){ c.peerReadTs = m.ts; saveStore(); if(cId===currentId) refreshMessageReadStatus(cId); }
+  }
   else if(m.type==='bye'){ appendSys(cId,"对方已断开"); peerBye.add(cId); }
 }
 function finalizeChannel(channel, peerId, peerName){
@@ -530,6 +541,23 @@ function ipModeLabel(ctype){
   return ctype||'';
 }
 
+/* ===================== 已读回执 ===================== */
+function sendReadReceipt(contactId){
+  const ch = connections.get(contactId);
+  if(!ch) return;
+  const ts = nowTs();
+  try{ ch.send(JSON.stringify({type:"read", ts})); }catch(e){}
+}
+function refreshMessageReadStatus(contactId){
+  const c = getContact(contactId);
+  if(!c) return;
+  const msgs = document.getElementById('messages').querySelectorAll('.read-tag');
+  msgs.forEach(rd=>{
+    const ts = parseInt(rd.getAttribute('data-ts'));
+    if(c.peerReadTs && ts <= c.peerReadTs){ rd.textContent='✓已读'; }
+  });
+}
+
 /* 发送消息 */
 function sendMsg(){
   const ta=document.getElementById('inputMsg');
@@ -568,6 +596,11 @@ function pickFile(){ document.getElementById('fileSendInput').click(); }
 document.getElementById('fileSendInput').addEventListener('change', e=>{
   const f=e.target.files[0]; e.target.value=''; if(!f) return;
   sendFile(f);
+});
+/* 图片发送 input 监听 */
+document.getElementById('imageSendInput').addEventListener('change', e=>{
+  const f=e.target.files[0]; e.target.value=''; if(!f) return;
+  sendImage(f);
 });
 function fmtSize(n){
   if(n<1024) return n+' B';
@@ -650,6 +683,87 @@ function updateFileProgress(fid){
   const lp=el.querySelector('.fl-pct'); if(lp) lp.textContent=pct+'%';
 }
 
+/* ===================== 图片传输（内嵌显示） ===================== */
+const imageTransfers = new Map();  // iid -> {received,size,dir,contactId,name}（同 fileTransfers 模式）
+const imageUrls = new Map();       // iid -> objectURL（运行时，不持久化）
+
+function pickImage(){ document.getElementById('imageSendInput').click(); }
+async function sendImage(file){
+  if(!file.type.startsWith('image/')) return toast("请选择图片文件");
+  const cId=currentConnId();
+  if(!cId || !connections.has(cId)) return toast("未连接，无法发送图片");
+  const channel=connections.get(cId);
+  if(!channel.bufferedAmountLowThreshold || channel.bufferedAmountLowThreshold<1*1024*1024) channel.bufferedAmountLowThreshold=1*1024*1024;
+  const iid=randId();
+  const meta={type:"image-meta", iid, name:file.name, size:file.size, mime:file.type||'image/png'};
+  try{ channel.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
+  imageTransfers.set(iid,{received:0,size:file.size,dir:'out',contactId:cId,name:file.name});
+  addImageMessage(cId,'out',meta);
+  let offset=0;
+  try{
+    while(offset<file.size){
+      const buf=await file.slice(offset, offset+FILE_CHUNK).arrayBuffer();
+      while(channel.bufferedAmount > FILE_BUF_HIGH){
+        await new Promise(r=>{ const h=()=>{channel.removeEventListener('bufferedamountlow',h); r();}; channel.addEventListener('bufferedamountlow',h); });
+      }
+      channel.send(buf);
+      offset+=buf.byteLength;
+      const st=imageTransfers.get(iid); if(st){ st.received=offset; updateImageProgress(iid); }
+    }
+    channel.send(JSON.stringify({type:"image-end", iid}));
+  }catch(e){ toast("图片发送失败: "+e.message); }
+  finally{ imageTransfers.delete(iid); }
+}
+function startReceiveImage(cId, info, m){
+  info.incomingImage={iid:m.iid, name:m.name, size:m.size, mime:m.mime, received:0, chunks:[]};
+  imageTransfers.set(m.iid,{received:0,size:m.size,dir:'in',contactId:cId,name:m.name});
+  addImageMessage(cId,'in',m);
+}
+function finishReceiveImage(cId, info, iid){
+  const inc=info.incomingImage; info.incomingImage=null;
+  imageTransfers.delete(iid);
+  if(!inc || inc.iid!==iid) return;
+  const blob=new Blob(inc.chunks,{type:inc.mime||'image/png'});
+  imageUrls.set(iid, URL.createObjectURL(blob));
+  if(cId===currentId){
+    const el=document.getElementById('img-'+iid);
+    if(el) renderImageInto(el,{iid,name:inc.name,size:inc.size,dir:'in'});
+  }
+}
+function addImageMessage(contactId, dir, meta){
+  if(!store.messages[contactId]) store.messages[contactId]=[];
+  const item={ts:nowTs(), dir, image:{iid:meta.iid, name:meta.name, size:meta.size}};
+  store.messages[contactId].push(item);
+  const c=getContact(contactId); if(c) c.lastSeen=item.ts;
+  if(dir==='in' && contactId!==currentId){ store.unread[contactId]=(store.unread[contactId]||0)+1; }
+  saveStore();
+  if(contactId===currentId) renderMessages();
+  renderContacts();
+}
+function renderImageInto(el, img){
+  const url=imageUrls.get(img.iid);
+  const st=imageTransfers.get(img.iid);
+  const transferring=!!st;
+  let body='';
+  if(url){
+    body=`<img src="${url}" alt="${escapeHtml(img.name)}" onclick="window.open('${url}')" title="点击查看原图">`;
+  }else if(transferring){
+    const pct = st && st.size ? Math.min(100, Math.round(st.received/st.size*100)) : 0;
+    body=`<div class="img-expired"><div style="text-align:center"><span class="spinner" style="margin-right:6px"></span>${pct}%</div></div>`;
+  }else{
+    body=`<div class="img-expired">（图片已失效 · ${fmtSize(img.size)}）</div>`;
+  }
+  el.innerHTML=body+(url?`<div class="img-info">${fmtTime(nowTs())}</div>`:'');
+}
+function updateImageProgress(iid){
+  const st=imageTransfers.get(iid); if(!st) return;
+  if(st.contactId!==currentId) return;
+  const el=document.getElementById('img-'+iid); if(!el) return;
+  const pct = st.size ? Math.min(100, Math.round(st.received/st.size*100)) : 100;
+  const exp=el.querySelector('.img-expired>div');
+  if(exp) exp.textContent=pct+'%';
+}
+
 /* ===================== 渲染 ===================== */
 function renderAll(){ updateMobileView(); renderContacts(); renderChat(); renderIdentity(); }
 function renderIdentity(){
@@ -680,14 +794,15 @@ function renderTopbar(){
   const rc=document.getElementById('btnReconnect');
   const ta=document.getElementById('inputMsg');
   const bf=document.getElementById('btnFile');
-  if(!currentId){ document.getElementById('topTitle').textContent='未选择联系人'; document.getElementById('topSub').textContent=''; document.getElementById('topStatus').textContent=''; document.getElementById('topStatus').className='status'; btn.style.display='none'; rc.style.display='none'; ta.disabled=true; if(bf) bf.disabled=true; document.getElementById('messages').innerHTML=emptyHtml(); return; }
+  const bi=document.getElementById('btnImage');
+  if(!currentId){ document.getElementById('topTitle').textContent='未选择联系人'; document.getElementById('topSub').textContent=''; document.getElementById('topStatus').textContent=''; document.getElementById('topStatus').className='status'; btn.style.display='none'; rc.style.display='none'; ta.disabled=true; if(bf) bf.disabled=true; if(bi) bi.disabled=true; document.getElementById('messages').innerHTML=emptyHtml(); return; }
   const c=getContact(currentId); if(!c) return;
   document.getElementById('topTitle').textContent=contactDisplayText(c);
   document.getElementById('topSub').textContent=c.ip||'未知 IP';
   const st=document.getElementById('topStatus');
   const connected=connections.has(currentId);
-  if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; if(bf) bf.disabled=false; }
-  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=true; if(bf) bf.disabled=true; }
+  if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; if(bf) bf.disabled=false; if(bi) bi.disabled=false; }
+  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=true; if(bf) bf.disabled=true; if(bi) bi.disabled=true; }
   btn.style.display='';
   rc.style.display= connected? 'none':'inline-block'; // 仅未连接时显示重连按钮
   if(!connected && !hasMessages(currentId)) document.getElementById('messages').innerHTML=notConnHtml();
@@ -706,10 +821,17 @@ function renderMessages(){
       el.id='file-'+m.file.fid;
       renderFileCardInto(el, {fid:m.file.fid, name:m.file.name, size:m.file.size, dir:m.dir});
     }
-    else{ el.className='msg '+(m.dir==='out'?'out':'in'); el.innerHTML=escapeHtml(m.text)+`<div class="t">${fmtTime(m.ts)}</div>`; }
+    else if(m.image){
+      el.className='msg image '+(m.dir==='out'?'out':'in');
+      el.id='img-'+m.image.iid;
+      renderImageInto(el, {iid:m.image.iid, name:m.image.name, size:m.image.size, dir:m.dir});
+    }
+    else{ el.className='msg '+(m.dir==='out'?'out':'in'); el.dataset.ts=m.ts; el.innerHTML=escapeHtml(m.text)+`<div class="t">${fmtTime(m.ts)}${m.dir==='out'?`<span class="read-tag" data-ts="${m.ts}"></span>`:''}</div>`; }
     box.appendChild(el);
   }
   box.scrollTop=box.scrollHeight;
+  // 刷新已读回执标记
+  if(currentId) refreshMessageReadStatus(currentId);
 }
 function hasMessages(id){ return !!(store.messages[id]&&store.messages[id].length); }
 function emptyHtml(){

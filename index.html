@@ -45,6 +45,7 @@
     <div class="composer">
       <textarea id="inputMsg" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled
         onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMsg()}"></textarea>
+      <button class="ghost" onclick="pickImage()" title="发送图片" id="btnImage" disabled>🖼</button>
       <button class="ghost" onclick="pickFile()" title="发送文件" id="btnFile" disabled>📎</button>
       <button onclick="sendMsg()">发送</button>
     </div>
@@ -158,6 +159,7 @@
 
 <input type="file" id="fileInput" accept="application/json,.json" style="display:none">
 <input type="file" id="fileSendInput" style="display:none">
+<input type="file" accept="image/*" id="imageSendInput" style="display:none">
 <div class="toast" id="toast"></div>
 <script src="js/app.js"></script>
 </body>

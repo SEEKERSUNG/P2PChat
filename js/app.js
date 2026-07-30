@@ -50,6 +50,9 @@ function loadStore(){
     d.contacts.forEach(c=>{
       if(c.nameSet===undefined) c.nameSet=false;
       if(c.peerName===undefined) c.peerName = c.nameSet ? '' : (c.name||'');
+      // v2.7.6: 补 seq 回执字段（旧数据无 seq 回退时间戳判断）
+      if(c.peerDeliveredSeq===undefined) c.peerDeliveredSeq = -1;
+      if(c.peerReadSeq===undefined) c.peerReadSeq = -1;
     });
     d.version = 4; // v4 起仅直连，忽略历史 STUN 配置
     return d;
@@ -236,6 +239,9 @@ function startConnectWatchdog(pc, label){
     const established = [...channelMap.values()].some(i=>i.pc===pc && i.contactId);
     if(!established){
       toast(connectDiagnose(pc), 10000);
+      // 超时清理：释放 pendingPC 及握手资源
+      if(pendingPC===pc){ cleanupPending(); }
+      else{ try{ pc.close(); }catch(e){} }
     }
   }, 20000);
 }
@@ -463,14 +469,15 @@ function onChannelMsg(channel, data){
   const cId = info && info.contactId;
   if(!cId) return; // 身份未确认前丢弃业务消息
   if(m.type==='msg'){
-    addMessage(cId, 'in', m.text, m.ts);
-    if(cId===currentId) sendReadReceipt(cId);
-    // 处理序列号 + 发 ACK
     const conn = connections.get(cId);
+    // seq 去重：已处理过的消息只回累积 ACK，不重复 addMessage（弱网重传时）
     if(conn && typeof m.seq==='number'){
+      if(m.seq < conn.inSeq){ sendAck(cId, conn.inSeq-1); return; }
       conn.inSeq = Math.max(conn.inSeq, m.seq+1);
       sendAck(cId, conn.inSeq-1);
     }
+    addMessage(cId, 'in', m.text, m.ts, m.seq);
+    if(cId===currentId) sendReadReceipt(cId);
   }
   else if(m.type==='file-meta'){ startReceiveFile(cId, info, m); if(cId===currentId) sendReadReceipt(cId); }
   else if(m.type==='file-end'){ finishReceiveFile(cId, info, m.fid); }
@@ -478,7 +485,11 @@ function onChannelMsg(channel, data){
   else if(m.type==='image-end'){ finishReceiveImage(cId, info, m.iid); }
   else if(m.type==='read'){
     const c = getContact(cId);
-    if(c){ c.peerReadTs = m.ts; saveStore(); if(cId===currentId) requestAnimationFrame(()=>refreshMessageReadStatus(cId)); }
+    if(c){
+      if(typeof m.seq==='number') c.peerReadSeq = Math.max(c.peerReadSeq||0, m.seq);
+      c.peerReadTs = m.ts; // 保留时间戳用于文件/图片消息回退
+      saveStore(); if(cId===currentId) requestAnimationFrame(()=>refreshMessageReadStatus(cId));
+    }
   }
   else if(m.type==='ack'){
     const conn = connections.get(cId);
@@ -488,7 +499,11 @@ function onChannelMsg(channel, data){
       }
     }
     const c = getContact(cId);
-    if(c){ c.peerDeliveredTs = nowTs(); saveStore(); if(cId===currentId) requestAnimationFrame(()=>refreshMessageReadStatus(cId)); }
+    if(c){
+      c.peerDeliveredSeq = Math.max(c.peerDeliveredSeq||0, m.seq);
+      c.peerDeliveredTs = nowTs(); // 保留时间戳用于文件/图片消息回退
+      saveStore(); if(cId===currentId) requestAnimationFrame(()=>refreshMessageReadStatus(cId));
+    }
   }
   else if(m.type==='delivered'){
     const c = getContact(cId);
@@ -642,7 +657,10 @@ function sendReadReceipt(contactId){
   const conn = connections.get(contactId);
   if(!conn || !conn.chat) return;
   const ts = nowTs();
-  try{ conn.chat.send(JSON.stringify({type:"read", ts})); }catch(e){}
+  // 附带已收到的最大 seq，使对端能精确标记"已读"
+  const payload = {type:"read", ts};
+  if(conn.inSeq > 0) payload.seq = conn.inSeq - 1;
+  try{ conn.chat.send(JSON.stringify(payload)); }catch(e){}
 }
 function sendDeliveredReceipt(contactId){
   const conn = connections.get(contactId);
@@ -657,15 +675,16 @@ function sendAck(cId, seq){
 }
 function retransmitMsg(cId, seq){
   const conn = connections.get(cId);
-  if(!conn) return;
+  if(!conn || !conn.chat) return; // 通道已关闭则停止重传
   const p = conn.pending.get(seq);
   if(!p) return; // 已被 ACK 确认
+  p.retries++;
+  // 先判断是否已达上限（3次），避免多设一轮 24s 定时器导致延迟 45s 才报失败
   if(p.retries >= 3){
     conn.pending.delete(seq);
     if(cId===currentId) appendSys(cId, "⚠ 消息发送失败（已重试3次）");
     return;
   }
-  p.retries++;
   try{ conn.chat.send(JSON.stringify({type:"msg", ts:p.ts, text:p.text, seq})); }catch(e){}
   p.timer = setTimeout(()=>retransmitMsg(cId, seq), 3000 * Math.pow(2, p.retries));
 }
@@ -674,9 +693,18 @@ function refreshMessageReadStatus(contactId){
   if(!c) return;
   const msgs = document.getElementById('messages').querySelectorAll('.read-tag');
   msgs.forEach(rd=>{
-    const ts = parseInt(rd.getAttribute('data-ts'));
-    if(c.peerReadTs && ts <= c.peerReadTs){ rd.textContent='✓已读'; }
-    else if(c.peerDeliveredTs && ts <= c.peerDeliveredTs){ rd.textContent='✓已送达'; }
+    const ds = rd.getAttribute('data-seq');
+    if(ds !== null && ds !== ''){
+      // 文字消息：用 seq 精确判断（消除时间戳近似的误标）
+      const s = parseInt(ds);
+      if(typeof c.peerReadSeq==='number' && c.peerReadSeq >= 0 && s <= c.peerReadSeq){ rd.textContent='✓已读'; }
+      else if(typeof c.peerDeliveredSeq==='number' && c.peerDeliveredSeq >= 0 && s <= c.peerDeliveredSeq){ rd.textContent='✓已送达'; }
+    } else {
+      // 文件/图片：无 seq，回退时间戳判断
+      const ts = parseInt(rd.getAttribute('data-ts'));
+      if(c.peerReadTs && ts <= c.peerReadTs){ rd.textContent='✓已读'; }
+      else if(c.peerDeliveredTs && ts <= c.peerDeliveredTs){ rd.textContent='✓已送达'; }
+    }
   });
 }
 
@@ -704,7 +732,7 @@ function sendMsg(){
   // 加入重传队列（3s 后若未收到 ACK 则重发）
   const timer = setTimeout(()=>retransmitMsg(cId, seq), 3000);
   conn.pending.set(seq, {text, ts, timer, retries:0});
-  addMessage(cId,'out',text,ts); // 正常消息用 addMessage（不带 pending 标记）
+  addMessage(cId,'out',text,ts,seq); // 正常消息带 seq（用于精确回执）
   ta.value='';
 }
 function addPendingMessage(contactId, dir, text, ts){
@@ -727,6 +755,7 @@ function flushPendingMessages(contactId){
       try{ conn.chat.send(JSON.stringify({type:"msg", ts:m.ts, text:m.text, seq})); }catch(e){ continue; }
       const timer = setTimeout(()=>retransmitMsg(contactId, seq), 3000);
       conn.pending.set(seq, {text:m.text, ts:m.ts, timer, retries:0});
+      m.seq = seq; // 持久化 seq，用于精确回执判断
       delete m.pending;
     }
   }
@@ -736,9 +765,11 @@ function flushPendingMessages(contactId){
     appendSys(contactId, "↻ 已自动发送离线消息");
   }
 }
-function addMessage(contactId, dir, text, ts){
+function addMessage(contactId, dir, text, ts, seq){
+  const item = {ts:ts||nowTs(), dir, text};
+  if(typeof seq==='number') item.seq = seq;
   if(!store.messages[contactId]) store.messages[contactId]=[];
-  store.messages[contactId].push({ts:ts||nowTs(), dir, text});
+  store.messages[contactId].push(item);
   const c=getContact(contactId); if(c) c.lastSeen=ts||nowTs();
   if(dir==='in' && contactId!==currentId){ store.unread[contactId]=(store.unread[contactId]||0)+1; }
   saveStore();
@@ -755,6 +786,25 @@ function appendSys(contactId, text){
 /* ===================== 文件传输 ===================== */
 const FILE_CHUNK = 16*1024;            // 16KB 分块（兼容 SCTP 默认消息上限）
 const FILE_BUF_HIGH = 8*1024*1024;     // 背压高水位 8MB
+/* 背压等待：缓冲降到低水位以下 / 通道关闭 / 超时 时 resolve。
+   通道关闭 resolve（不 reject）——调用方 while 检查 readyState 自行退出循环。 */
+function backpressureWait(channel, timeoutMs){
+  return new Promise((resolve, reject)=>{
+    if(channel.bufferedAmount <= FILE_BUF_HIGH || channel.readyState!=='open'){ resolve(); return; }
+    const tm = setTimeout(()=>{ cleanup(); reject(new Error('背压超时')); }, timeoutMs);
+    const onLow = ()=>{ cleanup(); resolve(); };
+    const onClose = ()=>{ cleanup(); resolve(); };
+    const cleanup = ()=>{
+      clearTimeout(tm);
+      channel.removeEventListener('bufferedamountlow', onLow);
+      channel.removeEventListener('close', onClose);
+      channel.removeEventListener('error', onClose);
+    };
+    channel.addEventListener('bufferedamountlow', onLow);
+    channel.addEventListener('close', onClose);
+    channel.addEventListener('error', onClose);
+  });
+}
 const fileTransfers = new Map();       // fid -> {received,size,dir,contactId,name} 进度（出/入共用）
 const fileUrls = new Map();            // fid -> objectURL（运行时下载链接，不持久化）
 
@@ -786,22 +836,23 @@ async function sendFile(file){
   if(!channel.bufferedAmountLowThreshold || channel.bufferedAmountLowThreshold<1*1024*1024) channel.bufferedAmountLowThreshold=1*1024*1024;
   const fid=randId();
   const meta={type:"file-meta", fid, name:file.name, size:file.size, mime:file.type||'application/octet-stream'};
-  try{ channel.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
+  try{ conn.chat.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
   fileTransfers.set(fid,{received:0,size:file.size,dir:'out',contactId:cId,name:file.name});
   addFileMessage(cId,'out',meta);
   let offset=0;
   try{
-    while(offset<file.size){
+    while(offset<file.size && channel.readyState==='open'){
       const buf=await file.slice(offset, offset+FILE_CHUNK).arrayBuffer();
-      // 背压：缓冲过高时等 bufferedamountlow 事件
-      while(channel.bufferedAmount > FILE_BUF_HIGH){
-        await new Promise(r=>{ const h=()=>{channel.removeEventListener('bufferedamountlow',h); r();}; channel.addEventListener('bufferedamountlow',h); });
+      // 背压：缓冲过高时等 bufferedamountlow 事件（带超时 + 通道关闭检测）
+      if(channel.bufferedAmount > FILE_BUF_HIGH){
+        try{ await backpressureWait(channel, 30000); }catch(e){ break; }
       }
+      if(channel.readyState!=='open') break;
       channel.send(buf);
       offset+=buf.byteLength;
       const st=fileTransfers.get(fid); if(st){ st.received=offset; updateFileProgress(fid); }
     }
-    channel.send(JSON.stringify({type:"file-end", fid}));
+    if(offset>=file.size) conn.chat.send(JSON.stringify({type:"file-end", fid}));
   }catch(e){ toast("文件发送失败: "+e.message); }
   finally{ fileTransfers.delete(fid); }
 }
@@ -869,22 +920,23 @@ async function sendImage(file){
   if(!channel.bufferedAmountLowThreshold || channel.bufferedAmountLowThreshold<1*1024*1024) channel.bufferedAmountLowThreshold=1*1024*1024;
   const iid=randId();
   const meta={type:"image-meta", iid, name:file.name, size:file.size, mime:file.type||'image/png'};
-  try{ channel.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
+  try{ conn.chat.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
   imageTransfers.set(iid,{received:0,size:file.size,dir:'out',contactId:cId,name:file.name});
   imageUrls.set(iid, URL.createObjectURL(file)); // 发送方立即显示缩略图
   addImageMessage(cId,'out',meta);
   let offset=0;
   try{
-    while(offset<file.size){
+    while(offset<file.size && channel.readyState==='open'){
       const buf=await file.slice(offset, offset+FILE_CHUNK).arrayBuffer();
-      while(channel.bufferedAmount > FILE_BUF_HIGH){
-        await new Promise(r=>{ const h=()=>{channel.removeEventListener('bufferedamountlow',h); r();}; channel.addEventListener('bufferedamountlow',h); });
+      if(channel.bufferedAmount > FILE_BUF_HIGH){
+        try{ await backpressureWait(channel, 30000); }catch(e){ break; }
       }
+      if(channel.readyState!=='open') break;
       channel.send(buf);
       offset+=buf.byteLength;
       const st=imageTransfers.get(iid); if(st){ st.received=offset; updateImageProgress(iid); }
     }
-    channel.send(JSON.stringify({type:"image-end", iid}));
+    if(offset>=file.size) conn.chat.send(JSON.stringify({type:"image-end", iid}));
   }catch(e){ toast("图片发送失败: "+e.message); }
   finally{ imageTransfers.delete(iid); }
 }
@@ -1015,9 +1067,10 @@ function renderMessages(){
     else{
       el.className='msg '+(m.dir==='out'?'out':'in');
       el.dataset.ts=m.ts;
+      if(typeof m.seq==='number') el.dataset.seq = m.seq;
       const statusTag = m.pending
         ? '<span class="read-tag pending">⏳ 未发送</span>'
-        : (m.dir==='out'?`<span class="read-tag" data-ts="${m.ts}"></span>`:'');
+        : (m.dir==='out'?`<span class="read-tag" data-ts="${m.ts}" data-seq="${typeof m.seq==='number'?m.seq:''}"></span>`:'');
       el.innerHTML=escapeHtml(m.text)+`<div class="t">${fmtTime(m.ts)}${statusTag}</div>`;
     }
     box.appendChild(el);
@@ -1097,6 +1150,9 @@ function deleteContact(){
     conn.pending.clear();
     connections.delete(currentId);
   }
+  // 关闭可能残留在 revivable 中的 PC，防止 ICE 连接泄漏
+  const rv = revivable.get(currentId);
+  if(rv){ try{ rv.close(); }catch(e){} }
   revivable.delete(currentId); cancelAutoRevive(currentId); peerBye.delete(currentId);
   store.contacts=store.contacts.filter(c=>c.id!==currentId);
   delete store.messages[currentId];

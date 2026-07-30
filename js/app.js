@@ -546,7 +546,17 @@ function finalizeChannels(chatCh, peerId, peerName){
   chatInfo.contactId = peerId;
   if(fileCh){ const fi = channelMap.get(fileCh); if(fi) fi.contactId = peerId; }
   const c = ensureContact(peerId, peerName);
-  connections.set(peerId, {chat: chatCh, file: fileCh, pc, outSeq:0, inSeq:0, pending:new Map()});
+  // 从历史消息恢复 seq 基线，避免重连后 outSeq/inSeq 归零与持久化的 peerReadSeq/peerDeliveredSeq 错位
+  // （否则新发出 seq 0 <= 旧 peerReadSeq 会误判"已读"；且跨连接重复消息无法去重）
+  let maxOutSeq = -1, maxInSeq = -1;
+  const hist = store.messages[peerId] || [];
+  for(const mm of hist){
+    if(typeof mm.seq === 'number'){
+      if(mm.dir === 'out') maxOutSeq = Math.max(maxOutSeq, mm.seq);
+      else if(mm.dir === 'in') maxInSeq = Math.max(maxInSeq, mm.seq);
+    }
+  }
+  connections.set(peerId, {chat: chatCh, file: fileCh, pc, outSeq: maxOutSeq+1, inSeq: maxInSeq+1, pending:new Map()});
   revivable.delete(peerId); peerBye.delete(peerId); cancelAutoRevive(peerId);
   if(pendingPC===pc) pendingPC=null;
   pendingChannel=null;

@@ -440,16 +440,25 @@ function onChannelOpen(channel, peerId, peerName, isChat){
 }
 function onChannelMsg(channel, data){
   // 二进制：文件/图片分块（仅 file 通道收发）
+  // meta/end 走 chat 通道避免队头阻塞，incoming 状态挂在 chat 条目上；
+  // 二进制分块到达 file 通道时需回溯同 PC 的 chat 条目查找 incoming 状态
   if(typeof data !== 'string'){
-    const info=channelMap.get(channel);
-    if(info && info.incomingFile){
-      info.incomingFile.chunks.push(data);
-      info.incomingFile.received += data.byteLength;
-      updateFileProgress(info.incomingFile.fid);
-    }else if(info && info.incomingImage){
-      info.incomingImage.chunks.push(data);
-      info.incomingImage.received += data.byteLength;
-      updateImageProgress(info.incomingImage.iid);
+    let target = channelMap.get(channel);
+    if(target && !target.incomingFile && !target.incomingImage){
+      for(const [ch, inf] of channelMap){
+        if(inf.pc===target.pc && inf.isChat && inf.contactId===target.contactId){
+          target = inf; break;
+        }
+      }
+    }
+    if(target && target.incomingFile){
+      target.incomingFile.chunks.push(data);
+      target.incomingFile.received += data.byteLength;
+      updateFileProgress(target.incomingFile.fid);
+    }else if(target && target.incomingImage){
+      target.incomingImage.chunks.push(data);
+      target.incomingImage.received += data.byteLength;
+      updateImageProgress(target.incomingImage.iid);
     }
     return;
   }

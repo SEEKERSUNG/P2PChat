@@ -88,10 +88,10 @@ function isMobile(){ return window.matchMedia && window.matchMedia('(max-width:6
 function selectContact(id){
   currentId=id;
   if(store.unread[id]){ store.unread[id]=0; saveStore(); }
-  // 记录进入聊天的时间，用于渲染新消息分界线
+  updateMobileView(); renderContacts(); renderChat();
+  // 记录进入聊天的时间（renderMessages 中利用旧值判断新消息分界线，渲染完后才更新）
   const c = getContact(id);
   if(c){ c.lastReadTs = nowTs(); saveStore(); }
-  updateMobileView(); renderContacts(); renderChat();
   if(id && connections.has(id)) sendReadReceipt(id); // 选中已连接联系人时发已读回执
   if(isMobile() && id){ try{ history.pushState({p2pchat:'chat'},''); }catch(e){} }
 }
@@ -985,7 +985,7 @@ function renderMessages(){
   let dividerShown = false;
   for(const m of arr){
     // 在第一个新消息（对方发来、时间晚于 lastReadTs）前插入分界线
-    if(!dividerShown && lastRead && m.dir==='in' && !m.pending && m.ts > lastRead && !m.file && !m.image){
+    if(!dividerShown && lastRead && m.dir==='in' && !m.pending && m.ts > lastRead){
       const div = document.createElement('div');
       div.className = 'msg-divider';
       div.textContent = '── 以下为新消息 ──';

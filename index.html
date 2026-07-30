@@ -93,6 +93,11 @@
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ok);color:#fff;padding:9px 18px;border-radius:8px;z-index:99;opacity:0;transition:.3s;pointer-events:none}
   .toast.show{opacity:1}
 
+  /* 生成中 loading */
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--acc);border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .gen-loading{display:flex;align-items:center;gap:8px;padding:14px 4px;color:var(--mut);font-size:12px}
+
   /* 未读徽章 */
   .badge{min-width:18px;height:18px;border-radius:9px;background:var(--err);color:#fff;font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;padding:0 5px;flex:none;line-height:1}
   /* 文件消息 */
@@ -186,7 +191,7 @@
     <div class="desc">基于 WebRTC 端到端加密直连。双方各需复制粘贴一段连接码完成握手。</div>
     <div id="dlgBody"></div>
     <div class="actions">
-      <button class="ghost" onclick="closeDialog('dlgConnect')">取消</button>
+      <button class="ghost" onclick="cancelConnect()">取消</button>
     </div>
   </div>
 </div>
@@ -216,7 +221,8 @@
   <div class="modal">
     <h2>设置</h2>
     <div class="field"><label>我的显示名</label><input id="setName"></div>
-    <div class="hint">本程序为<b>仅直连模式</b>：不使用任何 STUN/TURN，仅依赖本机 host 候选。仅适用于「同一局域网」或「双方均有公网 IP（含全局 IPv6）」。需系统防火墙放行入站 UDP；若连不上，可在 <span class="pill">chrome://flags</span> 关闭 mDNS 混淆以暴露真实本机 IP。</div>
+    <div class="hint">已启用 <b>STUN 辅助</b>（始终开启）：使用国内公共 STUN（小米 / 腾讯 / B站）获取反射地址，绕过 Chrome mDNS 混淆。仅在建连阶段联系 STUN，消息仍端到端加密、不经过 STUN。本机真实 IP 被 mDNS 隐藏时，侧栏将显示 STUN 反射的公网地址并标注。</div>
+    <div class="hint">需系统防火墙放行入站 UDP；STUN 仅能获取反射地址，仍需双方在同一局域网或均具公网 IP（不能穿越对称型 NAT）。</div>
     <div class="hint">提示：因 WebRTC 会话信息每次临时生成，已保存联系人无法凭 IP 自动重连，每次重连仍需重新交换一次连接码。</div>
     <div class="actions">
       <button class="danger" onclick="logoutAccount()">退出账号</button>
@@ -247,7 +253,7 @@
     <h2>快速上手</h2>
     <div class="desc">几条重要提示，可随时跳过。</div>
     <div class="hint"><b>① 建立连接</b>：一方点「新建连接」复制邀请码发给对方，对方点「接受连接」粘贴并回发应答码，邀请方粘贴应答码即连。</div>
-    <div class="hint"><b>② 仅直连模式</b>：需双方在同一局域网或均有公网 IP；Chrome 若连不上，请在 chrome://flags 关闭 mDNS 混淆。</div>
+    <div class="hint"><b>② 连接方式</b>：需双方在同一局域网或均有公网 IP。已启用 STUN 辅助绕过 Chrome mDNS 限制；本机真实 IP 被隐藏时，侧栏会显示 STUN 反射的公网地址。</div>
     <div class="hint"><b>③ 重连</b>：WebRTC 会话信息每次临时生成，断开后重连需重新交换一次连接码（联系人与记录自动保留）。</div>
     <div class="hint" style="color:var(--warn)"><b>⚠ 数据安全</b>：聊天记录与联系人仅存于本浏览器。退出账号或清空浏览器缓存前，务必先点「⬇ 导出」备份，否则数据将永久丢失。</div>
     <div class="actions">
@@ -291,14 +297,21 @@
 "use strict";
 /* ===================== 数据层 ===================== */
 const STORE_KEY = "ipvchat_data";
-/* 仅直连模式：不使用任何 STUN/TURN，仅依赖本机 host 候选（局域网 IP 或全局 IPv6）。
-   因此仅适用于「同一局域网」或「双方均有公网 IP（含全局 IPv6）」的场景。 */
+/* STUN 辅助始终启用：使用以下国内公共 STUN 服务器获取 srflx 反射地址，绕过 Chrome mDNS 混淆
+   （mDNS 把 host 候选改写为 *.local，跨子网/公网无法解析）。srflx 不受 mDNS 影响。
+   仅在建连阶段联系 STUN 获取反射地址，消息仍端到端加密、不经过 STUN。局域网亦可启用（无害）。 */
+const DEFAULT_STUN_SERVERS = [
+  {urls:'stun:stun.miwifi.com:3478'},        // 小米
+  {urls:'stun:stun.qq.com:3478'},            // 腾讯
+  {urls:'stun:stun.chat.bilibili.com:3478'}  // B站
+];
 
 let store = loadStore();
 let currentId = null;          // 当前选中联系人 id
 let pendingPC = null;          // 握手中的 PeerConnection
 let pendingRole = null;        // 'offer' | 'answer'
 let pendingChannel = null;
+let pendingPeerIps = null;     // 解析对端连接码时暂存其真实 IP（供 finalizeChannel 写入 contact.peerIps）
 let connections = new Map();   // contactId -> channel (已确认身份的活跃连接)
 let channelMap = new Map();    // channel -> {pc, contactId|null}
 let revivable = new Map();     // contactId -> pc（断开后保留的存活通道，用于尝试免交换码恢复）
@@ -379,58 +392,71 @@ function updateMobileView(){
 
 /* ===================== WebRTC ===================== */
 function newPC(){
-  const pc = new RTCPeerConnection({ iceServers: [] }); // 仅直连，不使用 STUN/TURN
+  // STUN 辅助始终启用：填入国内公共 STUN，收集 srflx 候选绕过 mDNS 混淆
+  const pc = new RTCPeerConnection({ iceServers: DEFAULT_STUN_SERVERS });
   // 默认处理对端在存活通道上新开的 DataChannel（用于免交换码恢复）
   pc.ondatachannel = e=>{ if(!channelMap.has(e.channel)) bindChannel(e.channel, pc, null, null); };
   return pc;
 }
 
-/* 探测本机 IP（IPv4/IPv6）：用 WebRTC ICE host 候选收集（仅直连，无 STUN） */
-async function refreshMyIp(){
-  const box=document.getElementById('myIpBox');
-  if(box) box.innerHTML='<span class="mi-empty">检测中…</span>';
-  const ips={host4:new Set(),host6:new Set(),mdns:new Set()};
+/* 探测本机 IP（IPv4/IPv6）：用 WebRTC ICE host 候选收集（仅直连，无 STUN，避免 srflx 污染本机地址） */
+function isRealIp(a){ return !!a && !a.endsWith('.local') && a!=='0.0.0.0' && a!=='::'; }
+/* 核心收集：创建临时 PC（启用 STUN）收集 host / srflx 候选，返回 {host4,host6,mdns,srflx}（均为 Set）。
+   srflx 为 STUN 反射的公网地址，不受 mDNS 影响——本机真实 IP 被隐藏时用它展示与连接。 */
+async function collectMyIps(){
+  const ips={host4:new Set(),host6:new Set(),mdns:new Set(),srflx:new Set()};
   let pc;
   try{
-    pc=new RTCPeerConnection({iceServers: []});
+    pc=new RTCPeerConnection({iceServers: DEFAULT_STUN_SERVERS});
     pc.createDataChannel('ip');
     pc.onicecandidate=e=>{
       if(!e.candidate||!e.candidate.candidate) return;
       const parts=e.candidate.candidate.split(' ');
       const addr=parts[4], typ=parts[7];
       if(!addr||!typ) return;
-      const isRealIp=a=> a && !a.endsWith('.local') && a!=='0.0.0.0' && a!=='::';
       const bucket=(a)=> a.includes(':')?ips.host6:ips.host4;
       if(addr.endsWith('.local')){ ips.mdns.add(addr); }
       else if(typ==='host'){ bucket(addr).add(addr); }
+      else if(typ==='srflx'){ ips.srflx.add(addr); } // STUN 反射地址（公网）
     };
     const offer=await pc.createOffer();
     await pc.setLocalDescription(offer);
     await waitIceComplete(pc);
   }catch(e){ /* ignore */ }
   finally{ try{pc&&pc.close();}catch(e){} }
+  return ips;
+}
+async function refreshMyIp(){
+  const box=document.getElementById('myIpBox');
+  if(box) box.innerHTML='<span class="mi-empty">检测中…</span>';
+  const ips=await collectMyIps();
   renderMyIp(ips);
 }
 function renderMyIp(ips){
   const box=document.getElementById('myIpBox'); if(!box) return;
   const lines=[];
-  const push=(tag,set)=>{
+  const push=(tag,set,note)=>{
     set.forEach(a=>{
       const ll = a.toLowerCase().startsWith('fe80')?' (链路本地)':'';
-      lines.push(`<div class="mi-line"><span class="mi-tag">${tag}</span>${escapeHtml(a)}${ll}</div>`);
+      lines.push(`<div class="mi-line"><span class="mi-tag">${tag}</span>${escapeHtml(a)}${ll}${note?` <span style="color:var(--mut);font-size:10px">${note}</span>`:''}</div>`);
     });
   };
   push('IPv4',ips.host4);
   push('IPv6',ips.host6);
+  push('STUN',ips.srflx, '反射公网');
+  const hasHost = ips.host4.size + ips.host6.size > 0;
   let html=lines.join('');
   if(!html){
     if(ips.mdns.size){
-      html='<div class="mi-note">仅检测到 mDNS（*.local），真实 IP 被浏览器隐藏。直连请在 chrome://flags 关闭 mDNS 混淆以暴露真实本机 IP。</div>';
+      html='<div class="mi-note">仅检测到 mDNS（*.local），且 STUN 未返回反射地址。请检查网络能否访问 STUN 服务器。</div>';
     }else{
       html='<div class="mi-empty">未检测到 IP 地址</div>';
     }
+  }else if(!hasHost && ips.srflx.size){
+    // 本机真实 IP 被 mDNS 全部隐藏，显示的是 STUN 反射的公网地址
+    html='<div class="mi-note">⚠ 本机真实 IP 被 mDNS 隐藏，以下为 STUN 反射获取的公网地址（已用于保障连接）：</div>'+html;
   }else if(ips.mdns.size){
-    html+='<div class="mi-note">部分本地 IP 被浏览器隐藏为 mDNS（*.local）。若连不上，可在 chrome://flags 关闭 mDNS 混淆。</div>';
+    html+='<div class="mi-note">部分本地 IP 被隐藏为 mDNS（*.local）；已启用 STUN 辅助保障连接。</div>';
   }
   box.innerHTML=html;
 }
@@ -459,6 +485,32 @@ function hasRealHostCandidate(pc){
     return addr && !addr.endsWith('.local');
   });
 }
+/* 从已收集完成的 localDescription 中提取本机真实 IP（host + srflx，排除 .local）。
+   复用握手 PC 已收集的候选，避免再开临时 PC 做 STUN 收集（省一次往返）。 */
+function extractIpsFromPc(pc){
+  const sdp = (pc.localDescription && pc.localDescription.sdp) || '';
+  const ips = new Set();
+  sdp.split('\n').forEach(l=>{
+    if(!l.startsWith('a=candidate=')) return;
+    const parts = l.split(' ');
+    const addr = parts[4], typ = parts[7];
+    if(!addr || !typ) return;
+    if((typ==='host' || typ==='srflx') && isRealIp(addr)) ips.add(addr);
+  });
+  return [...ips];
+}
+
+/* 连接诊断：STUN 始终启用，根据本机是否有真实 host 候选 / 对端 IP 给出场景化提示 */
+function connectDiagnose(pc){
+  const hasReal = hasRealHostCandidate(pc);
+  const c = currentId && getContact(currentId);
+  const peerIps = (c && c.peerIps) || pendingPeerIps || [];
+  const peerStr = peerIps.length ? `对端地址：${peerIps.join(' / ')}。` : '';
+  if(!hasReal){
+    return `⚠ 连接未建立。本机真实 IP 被 mDNS 隐藏（*.local），已通过 STUN 获取反射地址。若仍失败请确认：①系统防火墙放行入站 UDP ②网络可访问 STUN 服务器 ③双方在同一局域网或均具公网 IP。${peerStr}`;
+  }
+  return `⚠ 连接未建立。本机已暴露真实 IP，请确认对端：①防火墙放行入站 UDP ②未因 mDNS 隐藏真实 IP ③与你在同一局域网或具公网 IP。${peerStr}`;
+}
 
 /* 连接建立看门狗：提交应答码后若 20s 内未建立连接，给出诊断提示 */
 let connectWatchdog=null;
@@ -467,7 +519,7 @@ function startConnectWatchdog(pc, label){
   connectWatchdog = setTimeout(()=>{
     const established = [...channelMap.values()].some(i=>i.pc===pc && i.contactId);
     if(!established){
-      toast("⚠ "+(label||"连接")+"未建立。仅直连需：①同一局域网或双方均有公网IP ②放行入站UDP ③Chrome 在 chrome://flags 关闭 mDNS 混淆后重试", 9000);
+      toast(connectDiagnose(pc), 10000);
     }
   }, 20000);
 }
@@ -522,6 +574,9 @@ function attemptRevive(contactId){
 /* 邀请方：生成邀请码 */
 async function startInvite(){
   pendingRole='offer';
+  // 立即显示生成中提示，避免用户以为点击无反应（STUN 收集候选需要网络往返）
+  showConnectDialog([{step:"第 1 步 · 正在生成邀请码", body:`
+    <div class="gen-loading"><span class="spinner"></span>正在创建加密连接、收集 STUN 反射地址…</div>`}]);
   cleanupPending();
   const pc = newPC(); pendingPC = pc;
   const ch = pc.createDataChannel("chat",{ordered:true}); pendingChannel = ch;
@@ -529,10 +584,11 @@ async function startInvite(){
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   await waitIceComplete(pc);
+  if(pendingPC !== pc) return; // 用户在等待期间点了取消，中止生成
   startConnectWatchdog(pc, "连接");
   const mdnsWarn = hasRealHostCandidate(pc) ? '' :
-    '<div class="mi-note">⚠ 未检测到真实本机 IP（仅 mDNS）。直连很可能失败，请在 chrome://flags 关闭 mDNS 混淆后重试。</div>';
-  const code = encodeSignal({type:"offer", sdp: pc.localDescription, identity: store.identity});
+    '<div class="mi-note">ℹ 本机真实 IP 被 mDNS 隐藏（*.local），已通过 STUN 辅助获取反射地址以保障连接。</div>';
+  const code = encodeSignal({type:"offer", sdp: pc.localDescription, identity: store.identity, ips: extractIpsFromPc(pc)});
   showConnectDialog([
     {step:"第 1 步（共 3 步） · 你是邀请方", body:`
       <p style="font-size:12px;color:var(--mut)">把下面的<b>邀请码</b>发给对方（任意聊天工具），让对方点「接受连接」并粘贴。</p>
@@ -547,13 +603,17 @@ async function startInvite(){
 async function finalizeOffer(){
   const s = document.getElementById('codeIn').value.trim();
   if(!s) return toast("请粘贴应答码");
+  const pc = pendingPC;
+  if(!pc) return toast("连接已取消，请重新开始");
   try{
     const obj = decodeSignal(s);
     if(obj.type!=='answer') return toast("这不是应答码");
-    await pendingPC.setRemoteDescription(new RTCSessionDescription(obj.sdp));
+    pendingPeerIps = Array.isArray(obj.ips) ? obj.ips : null; // 暂存对端真实 IP
+    await pc.setRemoteDescription(new RTCSessionDescription(obj.sdp));
+    if(pendingPC !== pc) return; // 用户在等待期间点了取消，中止
     toast("已提交，正在建立连接…", 3000);
     document.getElementById('dlgConnect').classList.remove('show');
-    startConnectWatchdog(pendingPC, "连接");
+    startConnectWatchdog(pc, "连接");
   }catch(e){ toast("应答码无效: "+e.message); }
 }
 
@@ -577,15 +637,21 @@ async function acceptOffer(){
   try{
     const obj = decodeSignal(s);
     if(obj.type!=='offer') return toast("这不是邀请码");
+    pendingPeerIps = Array.isArray(obj.ips) ? obj.ips : null; // 暂存对端真实 IP
+    // 立即显示生成中提示，避免用户以为点击无反应（STUN 收集候选需要网络往返）
+    const co=document.getElementById('codeOut');
+    if(co){ co.value='⏳ 正在生成应答码，收集 STUN 反射地址…'; }
+    toast("正在生成应答码…", 3000);
     const pc = newPC(); pendingPC = pc;
     pc.ondatachannel = e=>{ pendingChannel = e.channel; bindChannel(e.channel, pc, obj.identity.id, obj.identity.name); };
     await pc.setRemoteDescription(new RTCSessionDescription(obj.sdp));
     const ans = await pc.createAnswer();
     await pc.setLocalDescription(ans);
     await waitIceComplete(pc);
+    if(pendingPC !== pc) return; // 用户在等待期间点了取消，中止生成
     startConnectWatchdog(pc, "连接");
-    if(!hasRealHostCandidate(pc)) toast("⚠ 未检测到真实本机 IP（仅 mDNS），直连可能失败；可在 chrome://flags 关闭 mDNS 混淆", 6000);
-    const code = encodeSignal({type:"answer", sdp: pc.localDescription, identity: store.identity});
+    if(!hasRealHostCandidate(pc)) toast("ℹ 本机真实 IP 被 mDNS 隐藏，已通过 STUN 辅助获取反射地址", 5000);
+    const code = encodeSignal({type:"answer", sdp: pc.localDescription, identity: store.identity, ips: extractIpsFromPc(pc)});
     document.getElementById('codeOut').value = code;
     toast("已生成应答码，请复制回发给对方");
   }catch(e){ toast("邀请码无效: "+e.message); }
@@ -600,7 +666,7 @@ function bindChannel(channel, pc, knownPeerId, knownPeerName){
   channel.onerror = ()=> onChannelClose(channel);
   pc.oniceconnectionstatechange = ()=>{
     const st = pc.iceConnectionState;
-    if(st==='failed'){ clearConnectWatchdog(); toast("ICE 连接失败：请确认双方在同一局域网或均有公网 IP，并放行入站 UDP", 6000); onChannelClose(channel); }
+    if(st==='failed'){ clearConnectWatchdog(); toast("ICE 连接失败：请确认双方在同一局域网或均有公网 IP，并放行入站 UDP；STUN 已启用，若仍失败请检查网络能否访问 STUN 服务器", 7000); onChannelClose(channel); }
     else if(st==='disconnected'){ toast("连接中断，尝试恢复中..."); }
   };
 }
@@ -662,6 +728,8 @@ function finalizeChannel(channel, peerId, peerName){
   pendingChannel=null;
   clearConnectWatchdog();
   c.lastSeen = nowTs();
+  if(pendingPeerIps && pendingPeerIps.length){ c.peerIps = pendingPeerIps; } // 写入对端信令真实 IP，供显示/诊断
+  pendingPeerIps = null;
   detectPeerIp(info.pc, peerId);
   saveStore();
   closeDialog('dlgConnect');
@@ -718,6 +786,7 @@ function cleanupPending(){
     pendingPC=null;
   }
   pendingChannel=null;
+  pendingPeerIps=null;
 }
 async function detectPeerIp(pc, contactId){
   try{
@@ -733,6 +802,12 @@ async function detectPeerIp(pc, contactId){
         }
       }
     });
+    // mDNS 混淆下 getStats 可能拿到 *.local：回退用信令里对端真实 IP 显示，并标记 ipType='signal'
+    if(!ip || ip.endsWith('.local')){
+      const c0=getContact(contactId);
+      const sig = c0 && c0.peerIps && c0.peerIps.find(isRealIp);
+      if(sig){ ip=sig; ctype='signal'; }
+    }
     if(ip){
       const c=getContact(contactId);
       if(c){ c.ip=ip; c.ipType=ctype; c.lastSeen=nowTs(); saveStore(); renderContacts(); if(contactId===currentId){ renderTopbar(); if(document.getElementById('dIpInfo')) renderDetailIpInfo(c); } }
@@ -740,8 +815,10 @@ async function detectPeerIp(pc, contactId){
   }catch(e){}
 }
 function ipModeLabel(ctype){
-  // 仅直连模式：host/prflx 为直连，理论上不会出现 srflx/relay
+  // 仅直连模式：host/prflx 为直连；开启 STUN 辅助时可能出现 srflx；signal 为信令回退显示
   if(ctype==='host'||ctype==='prflx') return '直连';
+  if(ctype==='srflx') return 'STUN';
+  if(ctype==='signal') return '信令';
   return ctype||'';
 }
 
@@ -948,6 +1025,12 @@ function showConnectDialog(steps){
   document.getElementById('dlgConnect').classList.add('show');
 }
 function closeDialog(id){ document.getElementById(id).classList.remove('show'); }
+/* 取消连接向导：关闭对话框并清理握手中的 PC，使进行中的 startInvite/acceptOffer 检测到中断后中止 */
+function cancelConnect(){
+  closeDialog('dlgConnect');
+  cleanupPending();
+  pendingPeerIps = null;
+}
 
 /* 详情 */
 function openDetail(){

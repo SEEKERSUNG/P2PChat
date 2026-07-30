@@ -20,8 +20,8 @@ let pendingPC = null;          // 握手中的 PeerConnection
 let pendingRole = null;        // 'offer' | 'answer'
 let pendingChannel = null;
 let pendingPeerIps = null;     // 解析对端连接码时暂存其真实 IP（供 finalizeChannel 写入 contact.peerIps）
-let connections = new Map();   // contactId -> channel (已确认身份的活跃连接)
-let channelMap = new Map();    // channel -> {pc, contactId|null}
+let connections = new Map();   // contactId -> {chat, file, pc, outSeq, inSeq, pending} (双通道连接)
+let channelMap = new Map();    // channel -> {pc, contactId|null, isChat}
 let revivable = new Map();     // contactId -> pc（断开后保留的存活通道，用于尝试免交换码恢复）
 let peerBye = new Set();       // 收到对端 bye 主动断开的联系人，不自动恢复
 let autoReviveTimers = new Map(); // contactId -> timeoutId
@@ -104,7 +104,7 @@ function newPC(){
   // STUN 辅助始终启用：填入国内公共 STUN，收集 srflx 候选绕过 mDNS 混淆
   const pc = new RTCPeerConnection({ iceServers: DEFAULT_STUN_SERVERS });
   // 默认处理对端在存活通道上新开的 DataChannel（用于免交换码恢复）
-  pc.ondatachannel = e=>{ if(!channelMap.has(e.channel)) bindChannel(e.channel, pc, null, null); };
+  pc.ondatachannel = e=>{ if(!channelMap.has(e.channel)) bindChannel(e.channel, pc, null, null, e.channel.label==='chat'); };
   return pc;
 }
 
@@ -266,30 +266,38 @@ function attemptRevive(contactId){
     const pc = revivable.get(contactId);
     if(!pc){ res(false); return; }
     if(pc.iceConnectionState!=='connected' && pc.iceConnectionState!=='completed'){
-      // ICE 已断，清理并放弃
       try{ pc.close(); }catch(e){}
       revivable.delete(contactId);
       res(false); return;
     }
-    let ch;
-    try{ ch = pc.createDataChannel('chat',{ordered:true}); }
+    let chatCh, fileCh;
+    try{
+      chatCh = pc.createDataChannel('chat',{ordered:true});
+      fileCh = pc.createDataChannel('file',{ordered:true});
+    }
     catch(e){ res(false); return; }
-    const to=setTimeout(()=>{ try{ch.close();}catch(e){} res(false); }, 5000);
-    ch.onopen=()=>{ clearTimeout(to); bindChannel(ch, pc, null, null); res(true); };
-    ch.onerror=()=>{ clearTimeout(to); res(false); };
+    let opened=0;
+    const to=setTimeout(()=>{ try{chatCh.close();fileCh.close();}catch(e){} res(false); }, 5000);
+    const onOpen=(ch,isC)=>{ opened++; bindChannel(ch, pc, null, null, isC); if(opened>=2){ clearTimeout(to); res(true); } };
+    chatCh.onopen=()=>onOpen(chatCh, true);
+    fileCh.onopen=()=>onOpen(fileCh, false);
+    chatCh.onerror=()=>{ clearTimeout(to); res(false); };
+    fileCh.onerror=()=>{ clearTimeout(to); res(false); };
   });
 }
 
 /* 邀请方：生成邀请码 */
 async function startInvite(){
   pendingRole='offer';
-  // 立即显示生成中提示，避免用户以为点击无反应（STUN 收集候选需要网络往返）
   showConnectDialog([{step:"第 1 步 · 正在生成邀请码", body:`
     <div class="gen-loading"><span class="spinner"></span>正在创建加密连接、收集 STUN 反射地址…</div>`}]);
   cleanupPending();
   const pc = newPC(); pendingPC = pc;
-  const ch = pc.createDataChannel("chat",{ordered:true}); pendingChannel = ch;
-  bindChannel(ch, pc, null, null);
+  const chatCh = pc.createDataChannel("chat",{ordered:true});
+  const fileCh = pc.createDataChannel("file",{ordered:true});
+  pendingChannel = chatCh;
+  bindChannel(chatCh, pc, null, null, true);
+  bindChannel(fileCh, pc, null, null, false);
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   await waitIceComplete(pc);
@@ -352,7 +360,14 @@ async function acceptOffer(){
     if(co){ co.value='⏳ 正在生成应答码，收集 STUN 反射地址…'; }
     toast("正在生成应答码…", 3000);
     const pc = newPC(); pendingPC = pc;
-    pc.ondatachannel = e=>{ pendingChannel = e.channel; bindChannel(e.channel, pc, obj.identity.id, obj.identity.name); };
+    pc.ondatachannel = e=>{
+      if(e.channel.label==='chat'){
+        pendingChannel = e.channel;
+        bindChannel(e.channel, pc, obj.identity.id, obj.identity.name, true);
+      } else if(e.channel.label==='file'){
+        bindChannel(e.channel, pc, null, null, false);
+      }
+    };
     await pc.setRemoteDescription(new RTCSessionDescription(obj.sdp));
     const ans = await pc.createAnswer();
     await pc.setLocalDescription(ans);
@@ -366,33 +381,37 @@ async function acceptOffer(){
   }catch(e){ toast("邀请码无效: "+e.message); }
 }
 
-function bindChannel(channel, pc, knownPeerId, knownPeerName){
+function bindChannel(channel, pc, knownPeerId, knownPeerName, isChat){
   channel.binaryType='arraybuffer'; // 接收文件分块用 ArrayBuffer
-  channelMap.set(channel, {pc, contactId: knownPeerId||null});
-  channel.onopen = ()=> onChannelOpen(channel, knownPeerId, knownPeerName);
+  channelMap.set(channel, {pc, contactId: knownPeerId||null, isChat: !!isChat});
+  channel.onopen = ()=> onChannelOpen(channel, knownPeerId, knownPeerName, !!isChat);
   channel.onmessage = e=> onChannelMsg(channel, e.data);
   channel.onclose = ()=> onChannelClose(channel);
   channel.onerror = ()=> onChannelClose(channel);
-  pc.oniceconnectionstatechange = ()=>{
-    const st = pc.iceConnectionState;
-    if(st==='failed'){ clearConnectWatchdog(); toast("ICE 连接失败：请确认双方在同一局域网或均有公网 IP，并放行入站 UDP；STUN 已启用，若仍失败请检查网络能否访问 STUN 服务器", 7000); onChannelClose(channel); }
-    else if(st==='disconnected'){ toast("连接中断，尝试恢复中..."); }
-  };
+  // ICE 状态监听仅 chat 通道绑定（避免 file 通道重复触发）
+  if(isChat){
+    pc.oniceconnectionstatechange = ()=>{
+      const st = pc.iceConnectionState;
+      if(st==='failed'){ clearConnectWatchdog(); toast("ICE 连接失败：请确认双方在同一局域网或均有公网 IP，并放行入站 UDP；STUN 已启用，若仍失败请检查网络能否访问 STUN 服务器", 7000); onChannelClose(channel); }
+      else if(st==='disconnected'){ toast("连接中断，尝试恢复中..."); }
+    };
+  }
 }
 
-function onChannelOpen(channel, peerId, peerName){
-  // 先发送本机身份
+function onChannelOpen(channel, peerId, peerName, isChat){
+  if(!isChat) return; // file 通道打开不触发逻辑，等 chat 通道
+  // 发送本机身份
   try{ channel.send(JSON.stringify({type:"hello", identity: store.identity})); }catch(e){}
   if(peerId){
     // 被邀方：邀请码里已带邀请方身份，直接登记
-    finalizeChannel(channel, peerId, peerName);
+    finalizeChannels(channel, peerId, peerName);
   }else{
     // 邀请方：需等对端 hello 才知道身份
     toast("连接已建立，等待对端身份...");
   }
 }
 function onChannelMsg(channel, data){
-  // 二进制：文件/图片分块
+  // 二进制：文件/图片分块（仅 file 通道收发）
   if(typeof data !== 'string'){
     const info=channelMap.get(channel);
     if(info && info.incomingFile){
@@ -409,19 +428,28 @@ function onChannelMsg(channel, data){
   let m; try{ m=JSON.parse(data); }catch{ return; }
   if(m.type==='hello'){
     const info=channelMap.get(channel);
-    // 已连接的同联系人发来 hello（用户改名同步）：仅更新用户名，不重走连接流程
+    // 已连接的同联系人发来 hello（改名同步）：仅更新用户名，不重走连接流程
     if(info && info.contactId && info.contactId===m.identity.id && connections.has(info.contactId)){
       const c=getContact(info.contactId);
       if(c){ c.peerName=m.identity.name||c.peerName; c.lastSeen=nowTs(); saveStore(); renderContacts(); if(info.contactId===currentId) renderTopbar(); }
       return;
     }
-    finalizeChannel(channel, m.identity.id, m.identity.name);
+    finalizeChannels(channel, m.identity.id, m.identity.name);
     return;
   }
   const info = channelMap.get(channel);
   const cId = info && info.contactId;
   if(!cId) return; // 身份未确认前丢弃业务消息
-  if(m.type==='msg'){ addMessage(cId, 'in', m.text, m.ts); if(cId===currentId) sendReadReceipt(cId); }
+  if(m.type==='msg'){
+    addMessage(cId, 'in', m.text, m.ts);
+    if(cId===currentId) sendReadReceipt(cId);
+    // 处理序列号 + 发 ACK
+    const conn = connections.get(cId);
+    if(conn && typeof m.seq==='number'){
+      conn.inSeq = Math.max(conn.inSeq, m.seq+1);
+      sendAck(cId, conn.inSeq-1);
+    }
+  }
   else if(m.type==='file-meta'){ startReceiveFile(cId, info, m); }
   else if(m.type==='file-end'){ finishReceiveFile(cId, info, m.fid); }
   else if(m.type==='image-meta'){ startReceiveImage(cId, info, m); }
@@ -430,6 +458,16 @@ function onChannelMsg(channel, data){
     const c = getContact(cId);
     if(c){ c.peerReadTs = m.ts; saveStore(); if(cId===currentId) refreshMessageReadStatus(cId); }
   }
+  else if(m.type==='ack'){
+    const conn = connections.get(cId);
+    if(conn){
+      for(const [seq, p] of conn.pending){
+        if(seq <= m.seq){ clearTimeout(p.timer); conn.pending.delete(seq); }
+      }
+    }
+    const c = getContact(cId);
+    if(c){ c.peerDeliveredTs = nowTs(); saveStore(); if(cId===currentId) refreshMessageReadStatus(cId); }
+  }
   else if(m.type==='delivered'){
     const c = getContact(cId);
     if(c && (!c.peerDeliveredTs || m.ts > c.peerDeliveredTs)){
@@ -437,27 +475,40 @@ function onChannelMsg(channel, data){
     }
   }
   else if(m.type==='bye'){ appendSys(cId,"对方已断开"); peerBye.add(cId); }
-  // 收到任何消息都发已送达回执（不等选中聊天）
-  if(m.type!=='delivered' && m.type!=='read') sendDeliveredReceipt(cId);
+  // 收到消息发已送达回执（msg 已通过 ACK 覆盖，此处仅对无 seq 消息和 file-meta 等发 delivered）
+  if(m.type!=='delivered' && m.type!=='read' && m.type!=='ack'){
+    // 仅非 msg 或旧版无 seq 的 msg 发 delivered（新版 msg 走 ACK）
+    if(m.type!=='msg' || typeof m.seq!=='number') sendDeliveredReceipt(cId);
+  }
 }
-function finalizeChannel(channel, peerId, peerName){
-  const info = channelMap.get(channel);
-  if(!info) return;
-  const oldId = info.contactId;
-  if(oldId && oldId!==peerId) connections.delete(oldId);
-  info.contactId = peerId;
+function finalizeChannels(chatCh, peerId, peerName){
+  const chatInfo = channelMap.get(chatCh);
+  if(!chatInfo) return;
+  const pc = chatInfo.pc;
+  // 查找同一 PC 上的 file 通道
+  let fileCh = null;
+  for(const [ch, info] of channelMap){
+    if(info.pc===pc && !info.isChat && !info.contactId){ fileCh = ch; break; }
+  }
+  const oldId = chatInfo.contactId;
+  if(oldId && oldId!==peerId){
+    const oc = connections.get(oldId);
+    if(oc){ for(const [seq,p] of oc.pending) clearTimeout(p.timer); oc.pending.clear(); }
+    connections.delete(oldId);
+  }
+  // 在 channelMap 中对两个通道写入 contactId
+  chatInfo.contactId = peerId;
+  if(fileCh){ const fi = channelMap.get(fileCh); if(fi) fi.contactId = peerId; }
   const c = ensureContact(peerId, peerName);
-  connections.set(peerId, channel);
-  revivable.delete(peerId); // 新连接已建立，清除旧的恢复缓存
-  peerBye.delete(peerId);
-  cancelAutoRevive(peerId);
-  if(pendingPC===info.pc) pendingPC=null; // 握手完成，不再算 pending
+  connections.set(peerId, {chat: chatCh, file: fileCh, pc, outSeq:0, inSeq:0, pending:new Map()});
+  revivable.delete(peerId); peerBye.delete(peerId); cancelAutoRevive(peerId);
+  if(pendingPC===pc) pendingPC=null;
   pendingChannel=null;
   clearConnectWatchdog();
   c.lastSeen = nowTs();
-  if(pendingPeerIps && pendingPeerIps.length){ c.peerIps = pendingPeerIps; } // 写入对端信令真实 IP，供显示/诊断
+  if(pendingPeerIps && pendingPeerIps.length){ c.peerIps = pendingPeerIps; }
   pendingPeerIps = null;
-  detectPeerIp(info.pc, peerId);
+  detectPeerIp(pc, peerId);
   saveStore();
   closeDialog('dlgConnect');
   selectContact(peerId);
@@ -473,13 +524,22 @@ function onChannelClose(channel){
   const cId = info.contactId;
   const pc = info.pc;
   channelMap.delete(channel);
-  if(cId && connections.get(cId)===channel){
+  if(!cId) return;
+  const conn = connections.get(cId);
+  if(!conn) return;
+  // 断开当前通道
+  if(info.isChat && conn.chat===channel) conn.chat = null;
+  else if(!info.isChat && conn.file===channel) conn.file = null;
+  // 两个通道都断开才算真正断开
+  if(!conn.chat && !conn.file){
+    // 清理 pending 定时器
+    for(const [seq, p] of conn.pending) clearTimeout(p.timer);
+    conn.pending.clear();
     connections.delete(cId);
-    // 保留底层 PC 以便尝试免交换码恢复（PC 未被主动 close 时可能仍存活）
+    // 保留底层 PC 以便尝试免交换码恢复
     if(pc && pc.iceConnectionState!=='closed'){ revivable.set(cId, pc); }
     if(cId===currentId){ appendSys(cId,"连接已断开"); renderChat(); }
     renderContacts();
-    // 自动尝试恢复（对端主动 bye 或 PC 已关闭则跳过）
     if(revivable.has(cId) && !peerBye.has(cId) && !autoReviveTimers.has(cId)){
       scheduleAutoRevive(cId);
     }
@@ -507,7 +567,7 @@ function cancelAutoRevive(cId){
 function cleanupPending(){
   clearConnectWatchdog();
   if(pendingPC){
-    // pendingPC 仍存在说明连接未完成（finalizeChannel 会把它置 null），可安全关闭并清理其通道
+    // 清理 pendingPC 上的所有通道
     for(const [ch,info] of channelMap){ if(info.pc===pendingPC){ try{ch.close();}catch(e){} channelMap.delete(ch); } }
     try{ pendingPC.close(); }catch(e){}
     pendingPC=null;
@@ -549,18 +609,37 @@ function ipModeLabel(ctype){
   return ctype||'';
 }
 
-/* ===================== 已读回执 ===================== */
+/* ===================== 已读回执 / ACK ===================== */
 function sendReadReceipt(contactId){
-  const ch = connections.get(contactId);
-  if(!ch) return;
+  const conn = connections.get(contactId);
+  if(!conn || !conn.chat) return;
   const ts = nowTs();
-  try{ ch.send(JSON.stringify({type:"read", ts})); }catch(e){}
+  try{ conn.chat.send(JSON.stringify({type:"read", ts})); }catch(e){}
 }
 function sendDeliveredReceipt(contactId){
-  const ch = connections.get(contactId);
-  if(!ch) return;
+  const conn = connections.get(contactId);
+  if(!conn || !conn.chat) return;
   const ts = nowTs();
-  try{ ch.send(JSON.stringify({type:"delivered", ts})); }catch(e){}
+  try{ conn.chat.send(JSON.stringify({type:"delivered", ts})); }catch(e){}
+}
+function sendAck(cId, seq){
+  const conn = connections.get(cId);
+  if(!conn || !conn.chat) return;
+  try{ conn.chat.send(JSON.stringify({type:"ack", seq})); }catch(e){}
+}
+function retransmitMsg(cId, seq){
+  const conn = connections.get(cId);
+  if(!conn) return;
+  const p = conn.pending.get(seq);
+  if(!p) return; // 已被 ACK 确认
+  if(p.retries >= 3){
+    conn.pending.delete(seq);
+    if(cId===currentId) appendSys(cId, "⚠ 消息发送失败（已重试3次）");
+    return;
+  }
+  p.retries++;
+  try{ conn.chat.send(JSON.stringify({type:"msg", ts:p.ts, text:p.text, seq})); }catch(e){}
+  p.timer = setTimeout(()=>retransmitMsg(cId, seq), 3000 * Math.pow(2, p.retries));
 }
 function refreshMessageReadStatus(contactId){
   const c = getContact(contactId);
@@ -578,10 +657,17 @@ function sendMsg(){
   const ta=document.getElementById('inputMsg');
   const text=ta.value.trim(); if(!text) return;
   const cId=currentConnId();
-  if(!cId || !connections.has(cId)) return toast("未连接，无法发送");
-  const channel=connections.get(cId);
+  const conn = connections.get(cId);
+  if(!conn || !conn.chat) return toast("未连接，无法发送");
+  // bufferedAmount 保护（64KB 软上限，防止消息被静默丢弃）
+  if(conn.chat.bufferedAmount > 64*1024) return toast("网络拥塞，稍后重试");
   const ts=nowTs();
-  try{ channel.send(JSON.stringify({type:"msg", ts, text})); }catch(e){ return toast("发送失败: "+e.message); }
+  const seq = conn.outSeq++;
+  const msg = {type:"msg", ts, text, seq};
+  try{ conn.chat.send(JSON.stringify(msg)); }catch(e){ return toast("发送失败: "+e.message); }
+  // 加入重传队列（3s 后若未收到 ACK 则重发）
+  const timer = setTimeout(()=>retransmitMsg(cId, seq), 3000);
+  conn.pending.set(seq, {text, ts, timer, retries:0});
   addMessage(cId,'out',text,ts);
   ta.value='';
 }
@@ -629,8 +715,9 @@ function fmtSize(n){
 }
 async function sendFile(file){
   const cId=currentConnId();
-  if(!cId || !connections.has(cId)) return toast("未连接，无法发送文件");
-  const channel=connections.get(cId);
+  const conn = connections.get(cId);
+  if(!conn || !conn.file) return toast("未连接，无法发送文件");
+  const channel=conn.file;
   if(!channel.bufferedAmountLowThreshold || channel.bufferedAmountLowThreshold<1*1024*1024) channel.bufferedAmountLowThreshold=1*1024*1024;
   const fid=randId();
   const meta={type:"file-meta", fid, name:file.name, size:file.size, mime:file.type||'application/octet-stream'};
@@ -711,8 +798,9 @@ function pickImage(){ document.getElementById('imageSendInput').click(); }
 async function sendImage(file){
   if(!file.type.startsWith('image/')) return toast("请选择图片文件");
   const cId=currentConnId();
-  if(!cId || !connections.has(cId)) return toast("未连接，无法发送图片");
-  const channel=connections.get(cId);
+  const conn = connections.get(cId);
+  if(!conn || !conn.file) return toast("未连接，无法发送图片");
+  const channel=conn.file;
   if(!channel.bufferedAmountLowThreshold || channel.bufferedAmountLowThreshold<1*1024*1024) channel.bufferedAmountLowThreshold=1*1024*1024;
   const iid=randId();
   const meta={type:"image-meta", iid, name:file.name, size:file.size, mime:file.type||'image/png'};
@@ -917,8 +1005,15 @@ function saveDetail(){
 function deleteContact(){
   if(!currentId) return;
   if(!confirm("确定删除该联系人及其聊天记录？")) return;
-  const ch=connections.get(currentId);
-  if(ch){ const info=channelMap.get(ch); if(info){ try{info.pc.close();}catch(e){} channelMap.delete(ch);} connections.delete(currentId); }
+  const conn = connections.get(currentId);
+  if(conn){
+    if(conn.chat){ const info=channelMap.get(conn.chat); if(info) channelMap.delete(conn.chat); }
+    if(conn.file){ const info=channelMap.get(conn.file); if(info) channelMap.delete(conn.file); }
+    try{ conn.pc.close(); }catch(e){}
+    for(const [seq,p] of conn.pending) clearTimeout(p.timer);
+    conn.pending.clear();
+    connections.delete(currentId);
+  }
   revivable.delete(currentId); cancelAutoRevive(currentId); peerBye.delete(currentId);
   store.contacts=store.contacts.filter(c=>c.id!==currentId);
   delete store.messages[currentId];
@@ -942,7 +1037,7 @@ function saveSettings(){
   saveStore(); renderIdentity(); closeDialog('dlgSettings'); toast("已保存");
   if(changed){ // 向所有已连接联系人同步新名字（对端收到 hello 即更新）
     const hello=JSON.stringify({type:"hello", identity: store.identity});
-    connections.forEach(ch=>{ try{ ch.send(hello); }catch(e){} });
+    connections.forEach(conn=>{ if(conn.chat) try{ conn.chat.send(hello); }catch(e){} });
   }
 }
 
@@ -970,6 +1065,7 @@ async function doLogout(backup){
   if(backup) await exportJSON(); // 退出前导出一份备份（await 确保导出完成再清数据）
   localStorage.removeItem(STORE_KEY);
   channelMap.forEach(i=>{try{i.pc.close();}catch(e){}});
+  connections.forEach(conn=>{ for(const [seq,p] of conn.pending) clearTimeout(p.timer); conn.pending.clear(); });
   connections.clear(); channelMap.clear(); revivable.clear(); peerBye.clear();
   autoReviveTimers.forEach(t=>clearTimeout(t)); autoReviveTimers.clear();
   currentId=null; clearConnectWatchdog();
@@ -1016,6 +1112,7 @@ document.getElementById('fileInput').addEventListener('change', e=>{
         if(!store.settings) store.settings={};
         if(!store.unread) store.unread={};
         store.version=4; // 仅直连，忽略历史 STUN 配置
+        connections.forEach(conn=>{ for(const [seq,p] of conn.pending) clearTimeout(p.timer); conn.pending.clear(); });
         saveStore(); connections.clear(); currentId=null; renderAll(); toast("导入成功");
         if(onboarding){ onboarding=false; closeDialog('dlgOnboard'); }
       }catch(err){ toast("导入失败: "+err.message); }

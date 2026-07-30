@@ -125,6 +125,8 @@
   .mi-tag{display:inline-block;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:10px;color:var(--mut);margin-right:6px;vertical-align:middle}
   .mi-empty{color:var(--mut)}
   .mi-note{color:var(--warn);margin-top:5px;font-family:inherit}
+  .msg-divider{text-align:center;color:var(--mut);font-size:11px;padding:12px 0 8px;opacity:.7;user-select:none}
+  .read-tag.pending{color:var(--warn)}
   @media (max-width:680px){
     #app{flex-direction:column}
     #sidebar{width:100%;min-width:0;height:100%}

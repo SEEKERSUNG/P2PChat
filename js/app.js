@@ -88,9 +88,12 @@ function isMobile(){ return window.matchMedia && window.matchMedia('(max-width:6
 function selectContact(id){
   currentId=id;
   if(store.unread[id]){ store.unread[id]=0; saveStore(); }
+  // 记录进入聊天的时间，用于渲染新消息分界线
+  const c = getContact(id);
+  if(c){ c.lastReadTs = nowTs(); saveStore(); }
   updateMobileView(); renderContacts(); renderChat();
   if(id && connections.has(id)) sendReadReceipt(id); // 选中已连接联系人时发已读回执
-  if(isMobile() && id){ try{ history.pushState({p2pchat:'chat'},''); }catch(e){} } // 注入历史项，使物理返回键回到列表而非退出
+  if(isMobile() && id){ try{ history.pushState({p2pchat:'chat'},''); }catch(e){} }
 }
 function goBack(){ currentId=null; updateMobileView(); renderContacts(); renderChat(); }
 function backBtn(){ if(isMobile() && currentId){ try{ history.back(); }catch(e){ goBack(); } } else { goBack(); } }
@@ -471,7 +474,7 @@ function onChannelMsg(channel, data){
   else if(m.type==='image-end'){ finishReceiveImage(cId, info, m.iid); }
   else if(m.type==='read'){
     const c = getContact(cId);
-    if(c){ c.peerReadTs = m.ts; saveStore(); if(cId===currentId) refreshMessageReadStatus(cId); }
+    if(c){ c.peerReadTs = m.ts; saveStore(); if(cId===currentId) requestAnimationFrame(()=>refreshMessageReadStatus(cId)); }
   }
   else if(m.type==='ack'){
     const conn = connections.get(cId);
@@ -481,12 +484,12 @@ function onChannelMsg(channel, data){
       }
     }
     const c = getContact(cId);
-    if(c){ c.peerDeliveredTs = nowTs(); saveStore(); if(cId===currentId) refreshMessageReadStatus(cId); }
+    if(c){ c.peerDeliveredTs = nowTs(); saveStore(); if(cId===currentId) requestAnimationFrame(()=>refreshMessageReadStatus(cId)); }
   }
   else if(m.type==='delivered'){
     const c = getContact(cId);
     if(c && (!c.peerDeliveredTs || m.ts > c.peerDeliveredTs)){
-      c.peerDeliveredTs = m.ts; saveStore(); if(cId===currentId) refreshMessageReadStatus(cId);
+      c.peerDeliveredTs = m.ts; saveStore(); if(cId===currentId) requestAnimationFrame(()=>refreshMessageReadStatus(cId));
     }
   }
   else if(m.type==='bye'){ appendSys(cId,"对方已断开"); peerBye.add(cId); }
@@ -529,6 +532,8 @@ function finalizeChannels(chatCh, peerId, peerName){
   selectContact(peerId);
   if(!oldId) appendSys(peerId, "✅ 已建立加密直连");
   toast("已连接 "+contactDisplayText(c));
+  // 自动发送离线期间排队的消息
+  flushPendingMessages(peerId);
 }
 function currentConnId(){ // 当前选中且已连接
   if(currentId && connections.has(currentId)) return currentId;
@@ -671,10 +676,18 @@ function refreshMessageReadStatus(contactId){
 function sendMsg(){
   const ta=document.getElementById('inputMsg');
   const text=ta.value.trim(); if(!text) return;
-  const cId=currentConnId();
+  const cId=currentId; // 用 currentId 允许离线发送
+  if(!cId) return toast("请先选择联系人");
   const conn = connections.get(cId);
-  if(!conn || !conn.chat) return toast("未连接，无法发送");
-  // bufferedAmount 保护（64KB 软上限，防止消息被静默丢弃）
+  const online = conn && conn.chat;
+  // 离线：标记 pending，等连接恢复后自动发送
+  if(!online){
+    const ts=nowTs();
+    addPendingMessage(cId, 'out', text, ts);
+    ta.value='';
+    return;
+  }
+  // 在线：正常发送
   if(conn.chat.bufferedAmount > 64*1024) return toast("网络拥塞，稍后重试");
   const ts=nowTs();
   const seq = conn.outSeq++;
@@ -683,8 +696,37 @@ function sendMsg(){
   // 加入重传队列（3s 后若未收到 ACK 则重发）
   const timer = setTimeout(()=>retransmitMsg(cId, seq), 3000);
   conn.pending.set(seq, {text, ts, timer, retries:0});
-  addMessage(cId,'out',text,ts);
+  addMessage(cId,'out',text,ts); // 正常消息用 addMessage（不带 pending 标记）
   ta.value='';
+}
+function addPendingMessage(contactId, dir, text, ts){
+  if(!store.messages[contactId]) store.messages[contactId]=[];
+  store.messages[contactId].push({ts, dir, text, pending:true});
+  saveStore();
+  if(contactId===currentId) renderMessages();
+  renderContacts();
+}
+/* 连接建立后，自动发送所有离线期间排队的消息 */
+function flushPendingMessages(contactId){
+  const conn = connections.get(contactId);
+  if(!conn || !conn.chat) return;
+  const arr = store.messages[contactId]||[];
+  let flushed = false;
+  for(const m of arr){
+    if(m.pending && m.dir==='out'){
+      flushed = true;
+      const seq = conn.outSeq++;
+      try{ conn.chat.send(JSON.stringify({type:"msg", ts:m.ts, text:m.text, seq})); }catch(e){ continue; }
+      const timer = setTimeout(()=>retransmitMsg(contactId, seq), 3000);
+      conn.pending.set(seq, {text:m.text, ts:m.ts, timer, retries:0});
+      delete m.pending;
+    }
+  }
+  if(flushed){
+    saveStore();
+    if(contactId===currentId) renderMessages();
+    appendSys(contactId, "↻ 已自动发送离线消息");
+  }
 }
 function addMessage(contactId, dir, text, ts){
   if(!store.messages[contactId]) store.messages[contactId]=[];
@@ -927,7 +969,7 @@ function renderTopbar(){
   const st=document.getElementById('topStatus');
   const connected=connections.has(currentId);
   if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; if(bf) bf.disabled=false; if(bi) bi.disabled=false; }
-  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=true; if(bf) bf.disabled=true; if(bi) bi.disabled=true; }
+  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=false; if(bf) bf.disabled=true; if(bi) bi.disabled=true; } // textarea 始终可用（离线可发送 pending 消息）
   btn.style.display='';
   rc.style.display= connected? 'none':'inline-block'; // 仅未连接时显示重连按钮
   if(!connected && !hasMessages(currentId)) document.getElementById('messages').innerHTML=notConnHtml();
@@ -938,7 +980,18 @@ function renderMessages(){
   if(!connections.has(currentId) && !hasMessages(currentId)){ box.innerHTML=notConnHtml(); return; }
   const arr=store.messages[currentId]||[];
   box.innerHTML='';
+  const c = getContact(currentId);
+  const lastRead = c && c.lastReadTs;
+  let dividerShown = false;
   for(const m of arr){
+    // 在第一个新消息（对方发来、时间晚于 lastReadTs）前插入分界线
+    if(!dividerShown && lastRead && m.dir==='in' && !m.pending && m.ts > lastRead && !m.file && !m.image){
+      const div = document.createElement('div');
+      div.className = 'msg-divider';
+      div.textContent = '── 以下为新消息 ──';
+      box.appendChild(div);
+      dividerShown = true;
+    }
     const el=document.createElement('div');
     if(m.dir==='sys'){ el.className='sys'; el.textContent=m.text; }
     else if(m.file){
@@ -951,7 +1004,14 @@ function renderMessages(){
       el.id='img-'+m.image.iid;
       renderImageInto(el, {iid:m.image.iid, name:m.image.name, size:m.image.size, dir:m.dir, ts:m.ts});
     }
-    else{ el.className='msg '+(m.dir==='out'?'out':'in'); el.dataset.ts=m.ts; el.innerHTML=escapeHtml(m.text)+`<div class="t">${fmtTime(m.ts)}${m.dir==='out'?`<span class="read-tag" data-ts="${m.ts}"></span>`:''}</div>`; }
+    else{
+      el.className='msg '+(m.dir==='out'?'out':'in');
+      el.dataset.ts=m.ts;
+      const statusTag = m.pending
+        ? '<span class="read-tag pending">⏳ 未发送</span>'
+        : (m.dir==='out'?`<span class="read-tag" data-ts="${m.ts}"></span>`:'');
+      el.innerHTML=escapeHtml(m.text)+`<div class="t">${fmtTime(m.ts)}${statusTag}</div>`;
+    }
     box.appendChild(el);
   }
   box.scrollTop=box.scrollHeight;

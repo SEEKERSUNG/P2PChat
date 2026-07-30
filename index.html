@@ -308,7 +308,8 @@ const DEFAULT_STUN_SERVERS = [
   {urls:'stun:stun.miwifi.com:3478'},        // 小米
   {urls:'stun:stun.qq.com:3478'},            // 腾讯
   {urls:'stun:stun.chat.bilibili.com:3478'}, // B站
-  {urls:'stun:stun.l.google.com:3478'}       // Google（补充，支持 IPv6 反射；国内可能不可达，不可达时退回 IPv4）
+  {urls:'stun:stun.cloudflare.com:3478'},    // Cloudflare（支持 IPv6 反射；国内可达）
+  {urls:'stun:stun.l.google.com:3478'}       // Google（补充候补，支持 IPv6 反射；国内可能不可达，不可达时退回 IPv4）
 ];
 
 let store = loadStore();

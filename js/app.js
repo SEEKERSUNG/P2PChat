@@ -529,7 +529,11 @@ function finalizeChannels(chatCh, peerId, peerName){
   detectPeerIp(pc, peerId);
   saveStore();
   closeDialog('dlgConnect');
+  // 保存旧的 lastReadTs——selectContact 会将其更新为 nowTs()，但对方离线消息尚未到达，
+  // 恢复旧值确保后续到达的 pending 消息能触发「── 以下为新消息 ──」分界线
+  const oldLastReadTs = c.lastReadTs;
   selectContact(peerId);
+  if(oldLastReadTs) { c.lastReadTs = oldLastReadTs; }
   if(!oldId) appendSys(peerId, "✅ 已建立加密直连");
   toast("已连接 "+contactDisplayText(c));
   // 自动发送离线期间排队的消息

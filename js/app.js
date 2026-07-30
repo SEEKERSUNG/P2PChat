@@ -85,13 +85,16 @@ function ensureContact(peerId, name){
   return c;
 }
 function isMobile(){ return window.matchMedia && window.matchMedia('(max-width:680px)').matches; }
-function selectContact(id){
+function selectContact(id, skipLastRead){
   currentId=id;
   if(store.unread[id]){ store.unread[id]=0; saveStore(); }
   updateMobileView(); renderContacts(); renderChat();
-  // 记录进入聊天的时间（renderMessages 中利用旧值判断新消息分界线，渲染完后才更新）
-  const c = getContact(id);
-  if(c){ c.lastReadTs = nowTs(); saveStore(); }
+  // 记录进入聊天的时间（用户主动点击时），用于渲染新消息分界线
+  // skipLastRead：重连自动进入时不更新，保留旧值以正确触发 pending 消息分界线
+  if(!skipLastRead){
+    const c = getContact(id);
+    if(c){ c.lastReadTs = nowTs(); saveStore(); }
+  }
   if(id && connections.has(id)) sendReadReceipt(id); // 选中已连接联系人时发已读回执
   if(isMobile() && id){ try{ history.pushState({p2pchat:'chat'},''); }catch(e){} }
 }
@@ -529,11 +532,9 @@ function finalizeChannels(chatCh, peerId, peerName){
   detectPeerIp(pc, peerId);
   saveStore();
   closeDialog('dlgConnect');
-  // 保存旧的 lastReadTs——selectContact 会将其更新为 nowTs()，但对方离线消息尚未到达，
-  // 恢复旧值确保后续到达的 pending 消息能触发「── 以下为新消息 ──」分界线
-  const oldLastReadTs = c.lastReadTs;
-  selectContact(peerId);
-  if(oldLastReadTs) { c.lastReadTs = oldLastReadTs; }
+  // skipLastRead=true：重连自动进入聊天时不更新 lastReadTs，
+  // 保留断开前的旧值，确保对方离线消息到达后能正确触发分界线
+  selectContact(peerId, true);
   if(!oldId) appendSys(peerId, "✅ 已建立加密直连");
   toast("已连接 "+contactDisplayText(c));
   // 自动发送离线期间排队的消息

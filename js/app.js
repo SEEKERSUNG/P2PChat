@@ -89,9 +89,10 @@ function selectContact(id, skipLastRead){
   currentId=id;
   if(store.unread[id]){ store.unread[id]=0; saveStore(); }
   updateMobileView(); renderContacts(); renderChat();
-  // 记录进入聊天的时间（用户主动点击时），用于渲染新消息分界线
-  // skipLastRead：重连自动进入时不更新，保留旧值以正确触发 pending 消息分界线
-  if(!skipLastRead){
+  // 仅在已连接时记录 lastReadTs（用户真正在"看新消息"）;
+  // 未连接时保留旧值，避免断线后重新点入时刷新为 nowTs，
+  // 导致重连后对方离线消息（ts < nowTs）无法触发分界线
+  if(!skipLastRead && connections.has(id)){
     const c = getContact(id);
     if(c){ c.lastReadTs = nowTs(); saveStore(); }
   }

@@ -38,6 +38,8 @@
   .side-head{padding:12px;border-bottom:1px solid var(--line)}
   .side-head h1{font-size:16px;margin:0 0 10px;display:flex;align-items:center;gap:8px}
   .side-head .me{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mut)}
+  .gh-link{margin-left:auto;font-size:12px;color:var(--mut);text-decoration:none}
+  .gh-link:hover{color:var(--acc)}
   .side-head .me b{color:var(--txt)}
   .toolbar{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
   #contactList{flex:1;overflow-y:auto;padding:6px}
@@ -144,7 +146,7 @@
   <!-- 侧栏 -->
   <aside id="sidebar">
     <div class="side-head">
-      <h1>🌍 P2PChat</h1>
+      <h1>🌍 P2PChat<a class="gh-link" href="https://github.com/SEEKERSUNG/P2PChat" target="_blank" rel="noopener" title="GitHub 源码仓库">GitHub ↗</a></h1>
       <div class="me">我：<b id="myName">—</b> <span class="pill" id="myId">—</span></div>
       <div class="toolbar">
         <button onclick="startInvite()">➕ 新建连接</button>
@@ -221,8 +223,8 @@
   <div class="modal">
     <h2>设置</h2>
     <div class="field"><label>我的显示名</label><input id="setName"></div>
-    <div class="hint">已启用 <b>STUN 辅助</b>（始终开启）：使用国内公共 STUN（小米 / 腾讯 / B站）获取反射地址，绕过 Chrome mDNS 混淆。仅在建连阶段联系 STUN，消息仍端到端加密、不经过 STUN。本机真实 IP 被 mDNS 隐藏时，侧栏将显示 STUN 反射的公网地址并标注。</div>
-    <div class="hint">需系统防火墙放行入站 UDP；STUN 仅能获取反射地址，仍需双方在同一局域网或均具公网 IP（不能穿越对称型 NAT）。</div>
+    <div class="hint">已启用 <b>STUN 辅助</b>（始终开启）：使用国内公共 STUN（小米 / 腾讯 / B站）获取 IPv4 反射地址，并补充 Google STUN 获取 IPv6 反射地址，绕过 Chrome mDNS 混淆。仅在建连阶段联系 STUN，消息仍端到端加密、不经过 STUN。本机真实 IP 被 mDNS 隐藏时，侧栏将显示 STUN 反射的公网地址并标注。</div>
+    <div class="hint">Google STUN 用于 IPv6 反射兜底，国内可能不可达；不可达时退回 IPv4，不影响连接。需系统防火墙放行入站 UDP；STUN 仅能获取反射地址，仍需双方在同一局域网或均具公网 IP（不能穿越对称型 NAT）。</div>
     <div class="hint">提示：因 WebRTC 会话信息每次临时生成，已保存联系人无法凭 IP 自动重连，每次重连仍需重新交换一次连接码。</div>
     <div class="actions">
       <button class="danger" onclick="logoutAccount()">退出账号</button>
@@ -297,13 +299,16 @@
 "use strict";
 /* ===================== 数据层 ===================== */
 const STORE_KEY = "ipvchat_data";
-/* STUN 辅助始终启用：使用以下国内公共 STUN 服务器获取 srflx 反射地址，绕过 Chrome mDNS 混淆
+/* STUN 辅助始终启用：使用国内公共 STUN 获取 srflx 反射地址，绕过 Chrome mDNS 混淆
    （mDNS 把 host 候选改写为 *.local，跨子网/公网无法解析）。srflx 不受 mDNS 影响。
+   国内 STUN 仅支持 IPv4；末尾补充 Google STUN（支持 IPv6 AAAA）以在 mDNS 隐藏公网 IPv6 时
+   提供 IPv6 srflx 兜底。Google 国内可能不可达，不可达时仅退回 IPv4，不影响连接。
    仅在建连阶段联系 STUN 获取反射地址，消息仍端到端加密、不经过 STUN。局域网亦可启用（无害）。 */
 const DEFAULT_STUN_SERVERS = [
   {urls:'stun:stun.miwifi.com:3478'},        // 小米
   {urls:'stun:stun.qq.com:3478'},            // 腾讯
-  {urls:'stun:stun.chat.bilibili.com:3478'}  // B站
+  {urls:'stun:stun.chat.bilibili.com:3478'}, // B站
+  {urls:'stun:stun.l.google.com:3478'}       // Google（补充，支持 IPv6 反射；国内可能不可达，不可达时退回 IPv4）
 ];
 
 let store = loadStore();

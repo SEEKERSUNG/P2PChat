@@ -2,6 +2,8 @@
 
 > 基于 WebRTC 的 IPv6/IPv4 端到端加密 P2P 聊天程序 —— 单个 HTML 文件，打开即用，无需任何后端服务。
 
+> 🌐 **在线体验**：<https://seekersung.github.io/P2PChat/> ｜ 📦 **源码仓库**：<https://github.com/SEEKERSUNG/P2PChat>
+
 ## 简介
 
 P2PChat 是一个纯前端的点对点聊天应用。整个程序只有**一个 `index.html` 文件**，双击即可在浏览器中打开使用，不依赖任何服务器、数据库或第三方运行时。两台设备各打开一份，交换一次连接码即可建立加密直连，开始聊天。
@@ -13,7 +15,7 @@ P2PChat 是一个纯前端的点对点聊天应用。整个程序只有**一个 
 - 🔌 **零部署**：单文件 HTML，离线可用，打开即用。
 - 🔐 **端到端加密**：WebRTC DataChannel + DTLS，消息与文件内容第三方无法窃听。
 - 🌐 **IPv6 / IPv4 / 局域网直连**：默认使用 ICE host 候选 + STUN 反射地址，支持同一局域网或双方均具公网 IP 直连。
-- 🧩 **STUN 辅助（始终启用）**：使用国内公共 STUN 获取反射地址，绕过 Chrome mDNS 混淆；仅建连阶段联系 STUN，消息仍端到端加密。本机真实 IP 被隐藏时，侧栏显示 STUN 反射的公网地址并标注。
+- 🧩 **STUN 辅助（始终启用）**：国内公共 STUN 获取 IPv4 反射地址 + Google STUN 补充 IPv6 反射地址，绕过 Chrome mDNS 混淆；仅建连阶段联系 STUN，消息仍端到端加密。本机真实 IP 被隐藏时，侧栏显示 STUN 反射的公网地址并标注。
 - 💬 **联系人管理**：备注名 + 对方用户名、IP、最近联系时间，可编辑/删除/清空记录。
 - 📎 **文件传输**：连接中可互发任意文件，分块流式传输 + 实时进度，端到端加密。
 - 💾 **本地持久化**：聊天记录与联系人自动保存到 `localStorage`，并支持导出/导入 JSON 备份。
@@ -25,7 +27,7 @@ P2PChat 是一个纯前端的点对点聊天应用。整个程序只有**一个 
 
 ## 快速开始
 
-1. 下载 `index.html`。
+1. 下载 `index.html`，或直接访问在线版：<https://seekersung.github.io/P2PChat/>。
 2. 用 Chrome / Edge / Firefox 打开（双击即可）。
 3. **首次打开**会弹出引导：选择「🆕 新建账号」或「⬆ 导入备份」恢复历史数据。新建后可查看操作提示（可跳过）。
 4. 两台设备（或同一台机器的两个浏览器）各打开一份：
@@ -51,7 +53,8 @@ P2PChat 是一个纯前端的点对点聊天应用。整个程序只有**一个 
 
 ### STUN 辅助说明
 
-- 连接使用国内公共 STUN（小米 `stun.miwifi.com`、腾讯 `stun.qq.com`、B站 `stun.chat.bilibili.com`，并发尝试）获取 `srflx` 反射地址，**不受 mDNS 影响**。
+- 连接使用国内公共 STUN（小米 `stun.miwifi.com`、腾讯 `stun.qq.com`、B站 `stun.chat.bilibili.com`，并发尝试）获取 IPv4 `srflx` 反射地址，并补充 Google STUN（`stun.l.google.com`，支持 IPv6）获取 IPv6 反射地址，**均不受 mDNS 影响**。
+- **IPv6 兜底**：mDNS 同样会隐藏公网 IPv6 的 host 候选；国内 STUN 仅支持 IPv4，故补充 Google STUN 提供 IPv6 `srflx`。Google 国内可能不可达，不可达时退回 IPv4，不影响连接。
 - **仅在建连阶段联系 STUN** 获取反射地址，消息与文件仍走端到端加密的 P2P 直连，**不经过 STUN**。
 - **本机地址展示**：当本机真实 IP 被 mDNS 隐藏（仅 `*.local`）时，侧栏「本机地址」面板会显示 STUN 反射的公网地址，并标注「本机真实 IP 被 mDNS 隐藏，以下为 STUN 反射获取的公网地址」。
 

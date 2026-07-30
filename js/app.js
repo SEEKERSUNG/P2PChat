@@ -976,12 +976,13 @@ async function doLogout(backup){
 async function exportJSON(){
   const blob=new Blob([JSON.stringify(store,null,2)],{type:'application/json'});
   const d=new Date(); const p=n=>String(n).padStart(2,'0');
-  const filename=`p2pchat-backup-${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}.json`;
+  const filename=`p2pchat-${store.identity.name}-${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}.json`
+    .replace(/[\\/:*?\"<>|]/g,'_'); // 过滤 Windows 文件名非法字符
   // 移动端优先 Web Share API：弹出系统分享/保存菜单，体验最可靠
   const file=new File([blob],filename,{type:'application/json'});
   try{
     if(navigator.canShare && navigator.canShare({files:[file]})){
-      await navigator.share({files:[file], title:'P2PChat 备份', text:filename});
+      await navigator.share({files:[file], title:`P2PChat 备份 - ${store.identity.name}`, text:filename});
       toast("已导出"); return;
     }
   }catch(e){ if(e && e.name==='AbortError') return; /* 用户取消则结束，否则回退到下载 */ }

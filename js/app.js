@@ -399,7 +399,22 @@ function bindChannel(channel, pc, knownPeerId, knownPeerName, isChat){
 }
 
 function onChannelOpen(channel, peerId, peerName, isChat){
-  if(!isChat) return; // file 通道打开不触发逻辑，等 chat 通道
+  if(!isChat){
+    // file 通道打开：如果 chat 已登记，将 file 通道补连到 connections
+    const info = channelMap.get(channel);
+    if(!info) return;
+    for(const [ch, inf] of channelMap){
+      if(inf.pc===info.pc && inf.isChat && inf.contactId){
+        const conn = connections.get(inf.contactId);
+        if(conn && !conn.file){
+          conn.file = channel;
+          info.contactId = inf.contactId;
+        }
+        break;
+      }
+    }
+    return;
+  }
   // 发送本机身份
   try{ channel.send(JSON.stringify({type:"hello", identity: store.identity})); }catch(e){}
   if(peerId){
@@ -485,10 +500,10 @@ function finalizeChannels(chatCh, peerId, peerName){
   const chatInfo = channelMap.get(chatCh);
   if(!chatInfo) return;
   const pc = chatInfo.pc;
-  // 查找同一 PC 上的 file 通道
+  // 查找同一 PC 上的 file 通道（可能尚未到达，由 onChannelOpen 补连）
   let fileCh = null;
   for(const [ch, info] of channelMap){
-    if(info.pc===pc && !info.isChat && !info.contactId){ fileCh = ch; break; }
+    if(info.pc===pc && !info.isChat){ fileCh = ch; break; }
   }
   const oldId = chatInfo.contactId;
   if(oldId && oldId!==peerId){

@@ -465,9 +465,9 @@ function onChannelMsg(channel, data){
       sendAck(cId, conn.inSeq-1);
     }
   }
-  else if(m.type==='file-meta'){ startReceiveFile(cId, info, m); }
+  else if(m.type==='file-meta'){ startReceiveFile(cId, info, m); if(cId===currentId) sendReadReceipt(cId); }
   else if(m.type==='file-end'){ finishReceiveFile(cId, info, m.fid); }
-  else if(m.type==='image-meta'){ startReceiveImage(cId, info, m); }
+  else if(m.type==='image-meta'){ startReceiveImage(cId, info, m); if(cId===currentId) sendReadReceipt(cId); }
   else if(m.type==='image-end'){ finishReceiveImage(cId, info, m.iid); }
   else if(m.type==='read'){
     const c = getContact(cId);

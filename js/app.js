@@ -430,7 +430,15 @@ function onChannelMsg(channel, data){
     const c = getContact(cId);
     if(c){ c.peerReadTs = m.ts; saveStore(); if(cId===currentId) refreshMessageReadStatus(cId); }
   }
+  else if(m.type==='delivered'){
+    const c = getContact(cId);
+    if(c && (!c.peerDeliveredTs || m.ts > c.peerDeliveredTs)){
+      c.peerDeliveredTs = m.ts; saveStore(); if(cId===currentId) refreshMessageReadStatus(cId);
+    }
+  }
   else if(m.type==='bye'){ appendSys(cId,"对方已断开"); peerBye.add(cId); }
+  // 收到任何消息都发已送达回执（不等选中聊天）
+  if(m.type!=='delivered' && m.type!=='read') sendDeliveredReceipt(cId);
 }
 function finalizeChannel(channel, peerId, peerName){
   const info = channelMap.get(channel);
@@ -548,6 +556,12 @@ function sendReadReceipt(contactId){
   const ts = nowTs();
   try{ ch.send(JSON.stringify({type:"read", ts})); }catch(e){}
 }
+function sendDeliveredReceipt(contactId){
+  const ch = connections.get(contactId);
+  if(!ch) return;
+  const ts = nowTs();
+  try{ ch.send(JSON.stringify({type:"delivered", ts})); }catch(e){}
+}
 function refreshMessageReadStatus(contactId){
   const c = getContact(contactId);
   if(!c) return;
@@ -555,6 +569,7 @@ function refreshMessageReadStatus(contactId){
   msgs.forEach(rd=>{
     const ts = parseInt(rd.getAttribute('data-ts'));
     if(c.peerReadTs && ts <= c.peerReadTs){ rd.textContent='✓已读'; }
+    else if(c.peerDeliveredTs && ts <= c.peerDeliveredTs){ rd.textContent='✓已送达'; }
   });
 }
 

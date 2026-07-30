@@ -532,9 +532,11 @@ function finalizeChannels(chatCh, peerId, peerName){
   detectPeerIp(pc, peerId);
   saveStore();
   closeDialog('dlgConnect');
-  // skipLastRead=true：重连自动进入聊天时不更新 lastReadTs，
-  // 保留断开前的旧值，确保对方离线消息到达后能正确触发分界线
-  selectContact(peerId, true);
+  // 首次连接：记录 lastReadTs 作为分界线基准。重连时保留旧值，
+  // 确保对方离线消息到达后 m.ts > lastReadTs 能正确触发分界线
+  const hadLastRead = !!c.lastReadTs;
+  selectContact(peerId, hadLastRead);
+  if(!hadLastRead) c.lastReadTs = nowTs();
   if(!oldId) appendSys(peerId, "✅ 已建立加密直连");
   toast("已连接 "+contactDisplayText(c));
   // 自动发送离线期间排队的消息

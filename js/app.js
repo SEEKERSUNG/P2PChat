@@ -443,8 +443,9 @@ function connectDiagnose(pc){
   return `⚠ 连接未建立。本机已暴露真实 IP，请确认对端：①防火墙放行入站 UDP ②未因 mDNS 隐藏真实 IP ③与你在同一局域网或具公网 IP。${peerStr}`;
 }
 
-/* 连接建立看门狗：真正开始 ICE 连通后（邀请方提交应答码 / 被邀方生成应答码）若 40s 内未建立连接，给出诊断提示。
-   注意：邀请方生成邀请码阶段不启动看门狗——此时仍在等对方人工回发应答码，交换时间不可控，不应计入连通超时。 */
+/* 连接建立看门狗：真正开始 ICE 连通后（邀请方提交应答码 / 被邀方生成应答码）若 90s 内未建立连接，给出诊断提示。
+   注意：邀请方生成邀请码阶段不启动看门狗——此时仍在等对方人工回发应答码，交换时间不可控，不应计入连通超时。
+   90s 容错覆盖双方交换连接码/二维码（扫码、复制粘贴）+ 跨网络 IPv6 ICE 连通；ICE failed 事件会立即报错，看门狗仅在卡住时兜底。 */
 let connectWatchdog=null;
 function startConnectWatchdog(pc, label){
   clearConnectWatchdog();
@@ -456,7 +457,7 @@ function startConnectWatchdog(pc, label){
       if(pendingPC===pc){ cleanupPending(); }
       else{ try{ pc.close(); }catch(e){} }
     }
-  }, 40000);
+  }, 90000);
 }
 function clearConnectWatchdog(){ if(connectWatchdog){ clearTimeout(connectWatchdog); connectWatchdog=null; } }
 
@@ -1057,6 +1058,13 @@ document.getElementById('imageSendInput').addEventListener('change', e=>{
     sendImage(f).catch(err=>{ console.error('sendImage:',err); toast('图片发送异常'); });
   }catch(err){ console.error('image input:',err); toast('操作失败'); }
 });
+/* 相机拍照发送 input 监听（capture=environment，移动端直接调起后置相机） */
+document.getElementById('cameraInput').addEventListener('change', e=>{
+  try{
+    const f=e.target.files[0]; e.target.value=''; if(!f) return;
+    sendImage(f).catch(err=>{ console.error('sendImage:',err); toast('图片发送异常'); });
+  }catch(err){ console.error('camera input:',err); toast('操作失败'); }
+});
 function fmtSize(n){
   if(n<1024) return n+' B';
   if(n<1048576) return (n/1024).toFixed(1)+' KB';
@@ -1146,6 +1154,7 @@ const imageTransfers = new Map();  // iid -> {received,size,dir,contactId,name}�
 const imageUrls = new Map();       // iid -> objectURL（运行时，不持久化）
 
 function pickImage(){ document.getElementById('imageSendInput').click(); }
+function pickCamera(){ document.getElementById('cameraInput').click(); }
 async function sendImage(file){
   if(!file.type.startsWith('image/')) return toast("请选择图片文件");
   const cId=currentConnId();
@@ -1257,14 +1266,15 @@ function renderTopbar(){
   const ta=document.getElementById('inputMsg');
   const bf=document.getElementById('btnFile');
   const bi=document.getElementById('btnImage');
-  if(!currentId){ document.getElementById('topTitle').textContent='未选择联系人'; document.getElementById('topSub').textContent=''; document.getElementById('topStatus').textContent=''; document.getElementById('topStatus').className='status'; btn.style.display='none'; rc.style.display='none'; ta.disabled=true; if(bf) bf.disabled=true; if(bi) bi.disabled=true; document.getElementById('messages').innerHTML=emptyHtml(); return; }
+  const bc=document.getElementById('btnCamera');
+  if(!currentId){ document.getElementById('topTitle').textContent='未选择联系人'; document.getElementById('topSub').textContent=''; document.getElementById('topStatus').textContent=''; document.getElementById('topStatus').className='status'; btn.style.display='none'; rc.style.display='none'; ta.disabled=true; if(bf) bf.disabled=true; if(bi) bi.disabled=true; if(bc) bc.disabled=true; document.getElementById('messages').innerHTML=emptyHtml(); return; }
   const c=getContact(currentId); if(!c) return;
   document.getElementById('topTitle').textContent=contactDisplayText(c);
   document.getElementById('topSub').textContent=c.ip||'未知 IP';
   const st=document.getElementById('topStatus');
   const connected=connections.has(currentId);
-  if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; if(bf) bf.disabled=false; if(bi) bi.disabled=false; }
-  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=false; if(bf) bf.disabled=true; if(bi) bi.disabled=true; } // textarea 始终可用（离线可发送 pending 消息）
+  if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; if(bf) bf.disabled=false; if(bi) bi.disabled=false; if(bc) bc.disabled=false; }
+  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=false; if(bf) bf.disabled=true; if(bi) bi.disabled=true; if(bc) bc.disabled=true; } // textarea 始终可用（离线可发送 pending 消息）
   btn.style.display='';
   rc.style.display= connected? 'none':'inline-block'; // 仅未连接时显示重连按钮
   if(!connected && !hasMessages(currentId)) document.getElementById('messages').innerHTML=notConnHtml();

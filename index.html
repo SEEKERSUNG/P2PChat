@@ -11,7 +11,7 @@
   <!-- 侧栏 -->
   <aside id="sidebar">
     <div class="side-head">
-      <h1>🌍 P2PChat<a class="gh-link" href="https://github.com/SEEKERSUNG/P2PChat" target="_blank" rel="noopener" title="GitHub 源码仓库">GitHub ↗</a><span class="ver">v2.9.4</span></h1>
+      <h1>🌍 P2PChat<a class="gh-link" href="https://github.com/SEEKERSUNG/P2PChat" target="_blank" rel="noopener" title="GitHub 源码仓库">GitHub ↗</a><span class="ver">v2.10.0</span></h1>
       <div class="me">我：<b id="myName">—</b> <span class="pill" id="myId">—</span></div>
       <div class="toolbar">
         <button onclick="startInvite()">➕ 新建连接</button>
@@ -45,6 +45,7 @@
     <div class="composer">
       <textarea id="inputMsg" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled
         onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMsg()}"></textarea>
+      <button class="ghost" onclick="pickCamera()" title="拍照发送" id="btnCamera" disabled>📷</button>
       <button class="ghost" onclick="pickImage()" title="发送图片" id="btnImage" disabled>🖼</button>
       <button class="ghost" onclick="pickFile()" title="发送文件" id="btnFile" disabled>📎</button>
       <button onclick="sendMsg()">发送</button>
@@ -161,6 +162,7 @@
 <input type="file" id="fileSendInput" style="display:none">
 <input type="file" accept="image/*" id="scanFileInput" style="display:none">
 <input type="file" accept="image/*" id="imageSendInput" style="display:none">
+<input type="file" accept="image/*" capture="environment" id="cameraInput" style="display:none">
 
 <!-- 二维码展示 -->
 <div class="overlay" id="dlgQr">
@@ -209,6 +211,6 @@
 <div class="toast" id="toast"></div>
 <script src="lib/qrcode-generator.js"></script>
 <script src="lib/jsQR.min.js"></script>
-<script src="js/app.js?v=2.9.4"></script>
+<script src="js/app.js?v=2.10.0"></script>
 </body>
 </html>

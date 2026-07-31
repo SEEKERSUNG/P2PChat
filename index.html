@@ -11,7 +11,7 @@
   <!-- 侧栏 -->
   <aside id="sidebar">
     <div class="side-head">
-      <h1>🌍 P2PChat<a class="gh-link" href="https://github.com/SEEKERSUNG/P2PChat" target="_blank" rel="noopener" title="GitHub 源码仓库">GitHub ↗</a><span class="ver">v2.8.0</span></h1>
+      <h1>🌍 P2PChat<a class="gh-link" href="https://github.com/SEEKERSUNG/P2PChat" target="_blank" rel="noopener" title="GitHub 源码仓库">GitHub ↗</a><span class="ver">v2.9.0</span></h1>
       <div class="me">我：<b id="myName">—</b> <span class="pill" id="myId">—</span></div>
       <div class="toolbar">
         <button onclick="startInvite()">➕ 新建连接</button>
@@ -160,7 +160,56 @@
 <input type="file" id="fileInput" accept="application/json,.json" style="display:none">
 <input type="file" id="fileSendInput" style="display:none">
 <input type="file" accept="image/*" id="imageSendInput" style="display:none">
+
+<!-- 二维码展示 -->
+<div class="overlay" id="dlgQr">
+  <div class="modal">
+    <h2 id="qrTitle">二维码</h2>
+    <div class="desc">对方可用 P2PChat「扫描二维码」识别，也可截图/保存后发送。点击二维码可放大。</div>
+    <div id="qrCanvasBox" class="qr-box"></div>
+    <div class="actions">
+      <button onclick="closeDialog('dlgQr')">关闭</button>
+      <button class="ghost" id="qrLarge">🔍 放大</button>
+      <button class="ghost" id="qrSave">💾 保存图片</button>
+      <button id="qrShare">📤 分享</button>
+    </div>
+  </div>
+</div>
+
+<!-- 二维码放大查看 -->
+<div class="overlay" id="dlgQrLarge">
+  <div class="modal qr-large-modal">
+    <h2>放大查看</h2>
+    <div class="desc">方便远距离扫描或截图保存。</div>
+    <div id="qrLargeBox" class="qr-box"></div>
+    <div class="actions">
+      <button onclick="closeDialog('dlgQrLarge')">关闭</button>
+      <button class="ghost" id="qrLargeSave">💾 保存图片</button>
+      <button id="qrLargeShare">📤 分享</button>
+    </div>
+  </div>
+</div>
+
+<!-- 二维码扫描 -->
+<div class="overlay" id="dlgScan">
+  <div class="modal">
+    <h2>扫描二维码</h2>
+    <div class="desc">将二维码对准摄像头自动识别，或点「上传二维码」从相册选择图片识别。</div>
+    <div class="scan-box">
+      <video id="scanVideo" class="scan-video" muted playsinline></video>
+      <div id="scanStatus" class="scan-status">正在启动摄像头…</div>
+    </div>
+    <input type="file" id="scanFileInput" accept="image/*" style="display:none">
+    <div class="actions">
+      <button onclick="closeScanner()">关闭</button>
+      <button class="ghost" id="scanUpload">📁 上传二维码</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
-<script src="js/app.js?v=2.8.0"></script>
+<script src="lib/qrcode-generator.js"></script>
+<script src="lib/jsQR.min.js"></script>
+<script src="js/app.js?v=2.9.0"></script>
 </body>
 </html>

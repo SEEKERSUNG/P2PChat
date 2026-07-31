@@ -234,6 +234,173 @@ async function decodeSignal(s){
   return JSON.parse(json);
 }
 
+/* ===== 二维码生成与扫描（v2.9.0）=====
+   生成：qrcode-generator 渲染到 canvas，可放大/保存/系统分享。
+   扫描：jsQR 解析摄像头帧或上传图片。连接码经 v2.8.0 deflate 压缩后约 800 字符，
+   QR 版本 ~25 可容纳；旧浏览器回退未压缩码过长时生成会失败并提示用文本复制。 */
+/* 生成二维码并弹窗展示 */
+function showQrCode(text, title){
+  if(typeof qrcode === 'undefined') return toast("二维码库未加载");
+  if(!text) return toast("暂无内容可生成二维码");
+  let qr;
+  try{
+    qr = qrcode(0, 'M'); // typeNumber=0 自动选最小版本，纠错级 M
+    qr.addData(text);
+    qr.make();
+  }catch(e){ return toast("连接码过长，无法生成二维码，请用文本复制"); }
+  const canvas = qrToCanvas(qr, 6);
+  document.getElementById('qrTitle').textContent = title || '二维码';
+  const box = document.getElementById('qrCanvasBox');
+  box.innerHTML='';
+  canvas.className='qr-canvas';
+  canvas.title='点击放大';
+  box.appendChild(canvas);
+  document.getElementById('qrLarge').onclick=()=>openQrLarge(canvas);
+  document.getElementById('qrSave').onclick=()=>saveQr(canvas);
+  document.getElementById('qrShare').onclick=()=>shareQr(canvas, title);
+  document.getElementById('dlgQr').classList.add('show');
+}
+/* qrcode-generator 对象 → canvas（cell=每模块像素，margin=静默区模块数） */
+function qrToCanvas(qr, cell){
+  const n = qr.getModuleCount();
+  const margin = 4;
+  const size = (n + margin*2) * cell;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,size,size);
+  ctx.fillStyle='#000';
+  for(let r=0;r<n;r++) for(let c=0;c<n;c++){
+    if(qr.isDark(r,c)) ctx.fillRect((c+margin)*cell,(r+margin)*cell,cell,cell);
+  }
+  return canvas;
+}
+/* 放大查看：最近邻缩放保持模块清晰边界 */
+function openQrLarge(srcCanvas){
+  const box = document.getElementById('qrLargeBox');
+  box.innerHTML='';
+  const big = document.createElement('canvas');
+  const scale = Math.max(2, Math.floor(720 / srcCanvas.width));
+  big.width = srcCanvas.width * scale;
+  big.height = srcCanvas.height * scale;
+  const ctx = big.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(srcCanvas, 0, 0, big.width, big.height);
+  big.className='qr-large';
+  box.appendChild(big);
+  document.getElementById('qrLargeSave').onclick=()=>saveQr(big);
+  document.getElementById('qrLargeShare').onclick=()=>shareQr(big, 'P2PChat 连接码');
+  document.getElementById('dlgQrLarge').classList.add('show');
+}
+/* 保存二维码为本地 PNG */
+function saveQr(canvas){
+  canvas.toBlob(blob=>{
+    if(!blob) return toast("保存失败");
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='p2pchat-qrcode.png';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+    toast("已保存二维码图片");
+  },'image/png');
+}
+/* 调用系统 Web Share API 分享到社交 app，不支持时回退保存 */
+function shareQr(canvas, title){
+  if(!navigator.share){ saveQr(canvas); return toast("当前环境不支持系统分享，已保存图片"); }
+  canvas.toBlob(async blob=>{
+    if(!blob) return toast("分享失败");
+    const file = new File([blob], 'p2pchat-qrcode.png', {type:'image/png'});
+    try{
+      if(navigator.canShare && !navigator.canShare({files:[file]})){
+        saveQr(canvas); return toast("当前环境不支持分享图片，已保存");
+      }
+      await navigator.share({files:[file], title: title||'P2PChat 连接码', text:'扫描此二维码建立 P2PChat 加密连接'});
+    }catch(e){ if(e && e.name!=='AbortError') toast("分享失败: "+e.message); }
+  },'image/png');
+}
+/* 扫描二维码：摄像头实时识别 + 上传图片识别，成功回调 callback(text) */
+let scanStream=null, scanRAF=null;
+function showQrScanner(callback){
+  if(typeof jsQR === 'undefined') return toast("二维码库未加载");
+  const ov=document.getElementById('dlgScan');
+  const video=document.getElementById('scanVideo');
+  const status=document.getElementById('scanStatus');
+  ov.classList.add('show');
+  status.textContent='正在启动摄像头…';
+  if(video) video.srcObject=null;
+  document.getElementById('scanUpload').onclick=()=>document.getElementById('scanFileInput').click();
+  document.getElementById('scanFileInput').onchange=(e)=>{
+    const f=e.target.files && e.target.files[0]; if(!f) return;
+    const url=URL.createObjectURL(f);
+    const img=new Image();
+    img.onload=()=>{
+      const r=decodeQrImage(img);
+      URL.revokeObjectURL(url);
+      if(r){ closeScanner(); callback(r); }
+      else status.textContent='未识别到二维码，请换一张图片或用摄像头扫描';
+    };
+    img.onerror=()=>{ URL.revokeObjectURL(url); status.textContent='图片读取失败'; };
+    img.src=url;
+    e.target.value=''; // 允许重复选择同一文件
+  };
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    status.textContent='当前环境不支持摄像头，可点「上传二维码」识别图片';
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}).then(stream=>{
+    scanStream=stream; video.srcObject=stream;
+    video.play().catch(()=>{});
+    status.textContent='将二维码对准摄像头…';
+    scanLoop(video, (text)=>{ closeScanner(); callback(text); });
+  }).catch(e=>{
+    status.textContent='摄像头不可用：'+(e.message||e.name)+'。可点「上传二维码」识别图片';
+  });
+}
+function scanLoop(video, onFound){
+  const canvas=document.createElement('canvas');
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  const tick=()=>{
+    if(!scanStream) return; // 已关闭则停止
+    if(video.readyState>=video.HAVE_ENOUGH_DATA && video.videoWidth){
+      const w=video.videoWidth, h=video.videoHeight;
+      canvas.width=w; canvas.height=h;
+      ctx.drawImage(video,0,0,w,h);
+      const img=ctx.getImageData(0,0,w,h);
+      const code=jsQR(img.data, w, h, {inversionAttempts:'attemptBoth'});
+      if(code && code.data){ onFound(code.data); return; }
+    }
+    scanRAF=requestAnimationFrame(tick);
+  };
+  tick();
+}
+/* 从图片解析二维码 */
+function decodeQrImage(img){
+  const canvas=document.createElement('canvas');
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  let w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
+  const max=1280;
+  if(w>max||h>max){ const s=max/Math.max(w,h); w=Math.round(w*s); h=Math.round(h*s); }
+  canvas.width=w; canvas.height=h;
+  ctx.drawImage(img,0,0,w,h);
+  const imgData=ctx.getImageData(0,0,w,h);
+  const code=jsQR(imgData.data, w, h, {inversionAttempts:'attemptBoth'});
+  return code ? code.data : null;
+}
+/* 关闭扫描：停止摄像头流与帧循环 */
+function closeScanner(){
+  if(scanRAF) cancelAnimationFrame(scanRAF); scanRAF=null;
+  if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; }
+  const v=document.getElementById('scanVideo'); if(v) v.srcObject=null;
+  document.getElementById('dlgScan').classList.remove('show');
+}
+/* 扫码结果填入指定输入框 */
+function scanTo(textareaId){
+  showQrScanner(text=>{
+    const el=document.getElementById(textareaId);
+    if(el){ el.value=text; toast("已识别并填入"); }
+  });
+}
+
 /* 检查 localDescription 中是否含有「真实 IP 的 host 候选」（非 mDNS） */
 function hasRealHostCandidate(pc){
   const sdp = (pc.localDescription && pc.localDescription.sdp) || '';
@@ -365,10 +532,10 @@ async function startInvite(){
       <p style="font-size:12px;color:var(--mut)">把下面的<b>邀请码</b>发给对方（任意聊天工具），让对方点「接受连接」并粘贴。</p>
       <textarea class="codebox" id="codeOut" readonly>${code}</textarea>
       ${mdnsWarn}
-      <div class="row"><button onclick="copyText(document.getElementById('codeOut').value)">复制邀请码</button></div>`},
+      <div class="row"><button onclick="copyText(document.getElementById('codeOut').value)">复制邀请码</button><button class="ghost" onclick="showQrCode(document.getElementById('codeOut').value,'邀请码二维码')">📱 二维码</button></div>`},
     {step:"第 3 步 · 等对方回发应答码后粘贴", body:`
       <textarea class="codebox" id="codeIn" placeholder="在此粘贴对方回发的应答码..."></textarea>
-      <div class="row"><button onclick="finalizeOffer()">完成连接</button></div>`}
+      <div class="row"><button onclick="finalizeOffer()">完成连接</button><button class="ghost" onclick="scanTo('codeIn')">📷 扫码导入应答码</button></div>`}
   ]);
 }
 async function finalizeOffer(){
@@ -396,10 +563,10 @@ async function startAccept(){
     {step:"第 2 步 · 你是被邀方", body:`
       <p style="font-size:12px;color:var(--mut)">粘贴对方发来的<b>邀请码</b>：</p>
       <textarea class="codebox" id="codeIn" placeholder="在此粘贴邀请码..."></textarea>
-      <div class="row"><button onclick="acceptOffer()">生成应答码</button></div>`},
+      <div class="row"><button onclick="acceptOffer()">生成应答码</button><button class="ghost" onclick="scanTo('codeIn')">📷 扫码导入邀请码</button></div>`},
     {step:"生成后 · 把应答码回发给对方", body:`
       <textarea class="codebox" id="codeOut" readonly placeholder="应答码将显示在这里..."></textarea>
-      <div class="row"><button onclick="copyText(document.getElementById('codeOut').value)">复制应答码</button></div>`}
+      <div class="row"><button onclick="copyText(document.getElementById('codeOut').value)">复制应答码</button><button class="ghost" onclick="showQrCode(document.getElementById('codeOut').value,'应答码二维码')">📱 二维码</button></div>`}
   ]);
 }
 async function acceptOffer(){

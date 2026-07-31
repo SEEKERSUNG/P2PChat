@@ -143,3 +143,15 @@
     .topbar{height:48px}
     .topbar .sub{max-width:40vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   }
+
+  /* 二维码（v2.9.0） */
+  .qr-box{display:flex;justify-content:center;padding:12px;background:#fff;border-radius:10px;margin:8px 0}
+  .qr-canvas{width:240px;height:240px;cursor:zoom-in;image-rendering:pixelated}
+  .qr-large{max-width:88vw;max-height:58vh;width:auto;height:auto;image-rendering:pixelated}
+  .qr-large-modal{max-width:94vw}
+  .scan-box{position:relative;background:#000;border-radius:10px;overflow:hidden;margin:8px 0}
+  .scan-video{width:100%;display:block;max-height:46vh;object-fit:cover}
+  .scan-status{padding:8px;text-align:center;color:var(--mut);font-size:12px;background:#000}
+  @media (max-width:680px){
+    .qr-canvas{width:200px;height:200px}
+  }

@@ -192,8 +192,47 @@ function waitIceComplete(pc){
   });
 }
 
-function encodeSignal(obj){ return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
-function decodeSignal(s){ return JSON.parse(decodeURIComponent(escape(atob(s.trim())))); }
+/* 连接码压缩：用 CompressionStream(deflate-raw) 压缩 JSON，base64 后加 'z' 前缀。
+   SDP 高度重复，deflate 可缩短约 60%。旧浏览器无 CompressionStream 时回退原 base64 + 'b' 前缀。
+   decodeSignal 兼容三种：'z'=压缩、'b'=新未压缩、无前缀=旧版连接码。 */
+function bytesToB64(bytes){
+  let bin='';
+  for(let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function b64ToBytes(b64){
+  const bin=atob(b64); const bytes=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  return bytes;
+}
+async function encodeSignal(obj){
+  const json = JSON.stringify(obj);
+  if(typeof CompressionStream !== 'undefined'){
+    try{
+      const input = new TextEncoder().encode(json);
+      const stream = new Blob([input]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+      const buf = new Uint8Array(await new Response(stream).arrayBuffer());
+      return 'z' + bytesToB64(buf);
+    }catch(e){}
+  }
+  return 'b' + btoa(unescape(encodeURIComponent(json)));
+}
+async function decodeSignal(s){
+  s = s.trim();
+  const head = s[0];
+  let json;
+  if(head === 'z'){
+    const bytes = b64ToBytes(s.slice(1));
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    const buf = await new Response(stream).arrayBuffer();
+    json = new TextDecoder().decode(buf);
+  }else if(head === 'b'){
+    json = decodeURIComponent(escape(atob(s.slice(1))));
+  }else{
+    json = decodeURIComponent(escape(atob(s))); // 兼容旧版无前缀连接码
+  }
+  return JSON.parse(json);
+}
 
 /* 检查 localDescription 中是否含有「真实 IP 的 host 候选」（非 mDNS） */
 function hasRealHostCandidate(pc){
@@ -320,7 +359,7 @@ async function startInvite(){
   // 看门狗改在 finalizeOffer() 提交应答码、真正开始 ICE 连通后启动。
   const mdnsWarn = hasRealHostCandidate(pc) ? '' :
     '<div class="mi-note">ℹ 本机真实 IP 被 mDNS 隐藏（*.local），已通过 STUN 辅助获取反射地址以保障连接。</div>';
-  const code = encodeSignal({type:"offer", sdp: pc.localDescription, identity: store.identity, ips: extractIpsFromPc(pc)});
+  const code = await encodeSignal({type:"offer", sdp: pc.localDescription, identity: store.identity, ips: extractIpsFromPc(pc)});
   showConnectDialog([
     {step:"第 1 步（共 3 步） · 你是邀请方", body:`
       <p style="font-size:12px;color:var(--mut)">把下面的<b>邀请码</b>发给对方（任意聊天工具），让对方点「接受连接」并粘贴。</p>
@@ -338,7 +377,7 @@ async function finalizeOffer(){
   const pc = pendingPC;
   if(!pc) return toast("连接已取消，请重新开始");
   try{
-    const obj = decodeSignal(s);
+    const obj = await decodeSignal(s);
     if(obj.type!=='answer') return toast("这不是应答码");
     pendingPeerIps = Array.isArray(obj.ips) ? obj.ips : null; // 暂存对端真实 IP
     await pc.setRemoteDescription(new RTCSessionDescription(obj.sdp));
@@ -367,7 +406,7 @@ async function acceptOffer(){
   const s = document.getElementById('codeIn').value.trim();
   if(!s) return toast("请粘贴邀请码");
   try{
-    const obj = decodeSignal(s);
+    const obj = await decodeSignal(s);
     if(obj.type!=='offer') return toast("这不是邀请码");
     pendingPeerIps = Array.isArray(obj.ips) ? obj.ips : null; // 暂存对端真实 IP
     // 立即显示生成中提示，避免用户以为点击无反应（STUN 收集候选需要网络往返）
@@ -390,7 +429,7 @@ async function acceptOffer(){
     if(pendingPC !== pc) return; // 用户在等待期间点了取消，中止生成
     startConnectWatchdog(pc, "连接");
     if(!hasRealHostCandidate(pc)) toast("ℹ 本机真实 IP 被 mDNS 隐藏，已通过 STUN 辅助获取反射地址", 5000);
-    const code = encodeSignal({type:"answer", sdp: pc.localDescription, identity: store.identity, ips: extractIpsFromPc(pc)});
+    const code = await encodeSignal({type:"answer", sdp: pc.localDescription, identity: store.identity, ips: extractIpsFromPc(pc)});
     document.getElementById('codeOut').value = code;
     toast("已生成应答码，请复制回发给对方");
   }catch(e){ toast("邀请码无效: "+e.message); }

@@ -2,7 +2,7 @@
 
 > 基于 WebRTC 的 IPv6/IPv4 端到端加密 P2P 聊天程序 —— 单个 HTML 文件，打开即用，无需任何后端服务。
 
-> 🌐 **在线体验**：<https://seekersung.github.io/P2PChat/> ｜ 📦 **源码仓库**：<https://github.com/SEEKERSUNG/P2PChat>
+> 🌐 **在线体验**：<https://seekersung.github.io/p2pchat/> ｜ 📦 **源码仓库**：<https://github.com/SEEKERSUNG/p2pchat>
 
 ## 简介
 

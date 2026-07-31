@@ -237,18 +237,18 @@ async function decodeSignal(s){
 /* ===== 二维码生成与扫描（v2.9.0）=====
    生成：qrcode-generator 渲染到 canvas，可放大/保存/系统分享。
    扫描：jsQR 解析摄像头帧或上传图片。连接码经 v2.8.0 deflate 压缩后约 800 字符，
-   QR 版本 ~25 可容纳；旧浏览器回退未压缩码过长时生成会失败并提示用文本复制。 */
+   纠错级 L 下 QR 版本 ~20（97×97 模块）可容纳且更易扫；旧浏览器回退未压缩码过长时生成会失败并提示用文本复制。 */
 /* 生成二维码并弹窗展示 */
 function showQrCode(text, title){
   if(typeof qrcode === 'undefined') return toast("二维码库未加载");
   if(!text) return toast("暂无内容可生成二维码");
   let qr;
   try{
-    qr = qrcode(0, 'M'); // typeNumber=0 自动选最小版本，纠错级 M
+    qr = qrcode(0, 'L'); // typeNumber=0 自动选最小版本，纠错级 L（7%）：屏幕二维码无污损，L 级模块数最少、每块最大，最易扫描
     qr.addData(text);
     qr.make();
   }catch(e){ return toast("连接码过长，无法生成二维码，请用文本复制"); }
-  const canvas = qrToCanvas(qr, 6);
+  const canvas = qrToCanvas(qr, 8);
   document.getElementById('qrTitle').textContent = title || '二维码';
   const box = document.getElementById('qrCanvasBox');
   box.innerHTML='';

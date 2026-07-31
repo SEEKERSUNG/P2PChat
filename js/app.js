@@ -332,7 +332,7 @@ function showQrScanner(callback){
     status.textContent='当前环境不支持摄像头，请改用「📁 上传二维码」按钮';
     return;
   }
-  navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}).then(stream=>{
+  navigator.mediaDevices.getUserMedia({video:{facingMode:'environment', width:{ideal:1280}, height:{ideal:720}}}).then(stream=>{
     scanStream=stream; video.srcObject=stream;
     video.play().catch(()=>{});
     status.textContent='将二维码对准摄像头…';
@@ -344,10 +344,13 @@ function showQrScanner(callback){
 function scanLoop(video, onFound){
   const canvas=document.createElement('canvas');
   const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  const MAX=640; // 降采样上限：jsQR 解析速度与帧率平衡，帧率高→尝试次数多→命中率高
   const tick=()=>{
     if(!scanStream) return; // 已关闭则停止
     if(video.readyState>=video.HAVE_ENOUGH_DATA && video.videoWidth){
-      const w=video.videoWidth, h=video.videoHeight;
+      const vw=video.videoWidth, vh=video.videoHeight;
+      const scale=Math.min(1, MAX/Math.max(vw,vh));
+      const w=Math.round(vw*scale), h=Math.round(vh*scale);
       canvas.width=w; canvas.height=h;
       ctx.drawImage(video,0,0,w,h);
       const img=ctx.getImageData(0,0,w,h);
@@ -358,18 +361,22 @@ function scanLoop(video, onFound){
   };
   tick();
 }
-/* 从图片解析二维码 */
+/* 从图片解析二维码（多尺度尝试提升识别率：640 快扫 → 1280 细节 → 2000 高清，任一命中即返回） */
 function decodeQrImage(img){
-  const canvas=document.createElement('canvas');
-  const ctx=canvas.getContext('2d',{willReadFrequently:true});
-  let w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
-  const max=1280;
-  if(w>max||h>max){ const s=max/Math.max(w,h); w=Math.round(w*s); h=Math.round(h*s); }
-  canvas.width=w; canvas.height=h;
-  ctx.drawImage(img,0,0,w,h);
-  const imgData=ctx.getImageData(0,0,w,h);
-  const code=jsQR(imgData.data, w, h, {inversionAttempts:'attemptBoth'});
-  return code ? code.data : null;
+  const natW=img.naturalWidth||img.width, natH=img.naturalHeight||img.height;
+  const maxes=[640, 1280, 2000];
+  for(const max of maxes){
+    let w=natW, h=natH;
+    if(max>0 && (w>max||h>max)){ const s=max/Math.max(w,h); w=Math.round(w*s); h=Math.round(h*s); }
+    if(w<1||h<1) continue;
+    const c=document.createElement('canvas'); c.width=w; c.height=h;
+    const x=c.getContext('2d',{willReadFrequently:true});
+    x.drawImage(img,0,0,w,h);
+    const imgData=x.getImageData(0,0,w,h);
+    const code=jsQR(imgData.data, w, h, {inversionAttempts:'attemptBoth'});
+    if(code && code.data) return code.data;
+  }
+  return null;
 }
 /* 关闭扫描：停止摄像头流与帧循环 */
 function closeScanner(){

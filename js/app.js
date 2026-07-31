@@ -775,6 +775,8 @@ function finalizeChannels(chatCh, peerId, peerName){
   detectPeerIp(pc, peerId);
   saveStore();
   closeDialog('dlgConnect');
+  closeDialog('dlgQr');       // 连接成功自动关闭二维码展示弹窗（应答码/邀请码）
+  closeDialog('dlgQrLarge');
   // 首次连接：记录 lastReadTs 作为分界线基准。重连时保留旧值，
   // 确保对方离线消息到达后 m.ts > lastReadTs 能正确触发分界线
   const hadLastRead = !!c.lastReadTs;

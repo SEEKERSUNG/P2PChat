@@ -392,6 +392,7 @@ function uploadQrTo(textareaId){
   input.onchange=(e)=>{
     const f=e.target.files && e.target.files[0]; e.target.value=''; // 允许重复选择同一文件
     if(!f) return;
+    toast("正在识别二维码，请稍候…", 6000);
     const url=URL.createObjectURL(f);
     const img=new Image();
     img.onload=()=>{

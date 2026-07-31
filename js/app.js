@@ -231,7 +231,8 @@ function connectDiagnose(pc){
   return `⚠ 连接未建立。本机已暴露真实 IP，请确认对端：①防火墙放行入站 UDP ②未因 mDNS 隐藏真实 IP ③与你在同一局域网或具公网 IP。${peerStr}`;
 }
 
-/* 连接建立看门狗：提交应答码后若 20s 内未建立连接，给出诊断提示 */
+/* 连接建立看门狗：真正开始 ICE 连通后（邀请方提交应答码 / 被邀方生成应答码）若 40s 内未建立连接，给出诊断提示。
+   注意：邀请方生成邀请码阶段不启动看门狗——此时仍在等对方人工回发应答码，交换时间不可控，不应计入连通超时。 */
 let connectWatchdog=null;
 function startConnectWatchdog(pc, label){
   clearConnectWatchdog();
@@ -243,7 +244,7 @@ function startConnectWatchdog(pc, label){
       if(pendingPC===pc){ cleanupPending(); }
       else{ try{ pc.close(); }catch(e){} }
     }
-  }, 20000);
+  }, 40000);
 }
 function clearConnectWatchdog(){ if(connectWatchdog){ clearTimeout(connectWatchdog); connectWatchdog=null; } }
 
@@ -315,7 +316,8 @@ async function startInvite(){
   await pc.setLocalDescription(offer);
   await waitIceComplete(pc);
   if(pendingPC !== pc) return; // 用户在等待期间点了取消，中止生成
-  startConnectWatchdog(pc, "连接");
+  // 不在此处启动连接看门狗：邀请方还在等对方人工回发应答码，交换时间不可控，不应计入连通超时。
+  // 看门狗改在 finalizeOffer() 提交应答码、真正开始 ICE 连通后启动。
   const mdnsWarn = hasRealHostCandidate(pc) ? '' :
     '<div class="mi-note">ℹ 本机真实 IP 被 mDNS 隐藏（*.local），已通过 STUN 辅助获取反射地址以保障连接。</div>';
   const code = encodeSignal({type:"offer", sdp: pc.localDescription, identity: store.identity, ips: extractIpsFromPc(pc)});

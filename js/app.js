@@ -328,23 +328,8 @@ function showQrScanner(callback){
   ov.classList.add('show');
   status.textContent='正在启动摄像头…';
   if(video) video.srcObject=null;
-  document.getElementById('scanUpload').onclick=()=>document.getElementById('scanFileInput').click();
-  document.getElementById('scanFileInput').onchange=(e)=>{
-    const f=e.target.files && e.target.files[0]; if(!f) return;
-    const url=URL.createObjectURL(f);
-    const img=new Image();
-    img.onload=()=>{
-      const r=decodeQrImage(img);
-      URL.revokeObjectURL(url);
-      if(r){ closeScanner(); callback(r); }
-      else status.textContent='未识别到二维码，请换一张图片或用摄像头扫描';
-    };
-    img.onerror=()=>{ URL.revokeObjectURL(url); status.textContent='图片读取失败'; };
-    img.src=url;
-    e.target.value=''; // 允许重复选择同一文件
-  };
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-    status.textContent='当前环境不支持摄像头，可点「上传二维码」识别图片';
+    status.textContent='当前环境不支持摄像头，请改用「📁 上传二维码」按钮';
     return;
   }
   navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}).then(stream=>{
@@ -353,7 +338,7 @@ function showQrScanner(callback){
     status.textContent='将二维码对准摄像头…';
     scanLoop(video, (text)=>{ closeScanner(); callback(text); });
   }).catch(e=>{
-    status.textContent='摄像头不可用：'+(e.message||e.name)+'。可点「上传二维码」识别图片';
+    status.textContent='摄像头不可用：'+(e.message||e.name)+'。请改用「📁 上传二维码」按钮';
   });
 }
 function scanLoop(video, onFound){
@@ -399,6 +384,26 @@ function scanTo(textareaId){
     const el=document.getElementById(textareaId);
     if(el){ el.value=text; toast("已识别并填入"); }
   });
+}
+/* 上传二维码图片识别并填入（独立入口，不开摄像头） */
+function uploadQrTo(textareaId){
+  if(typeof jsQR === 'undefined') return toast("二维码库未加载");
+  const input=document.getElementById('scanFileInput');
+  input.onchange=(e)=>{
+    const f=e.target.files && e.target.files[0]; e.target.value=''; // 允许重复选择同一文件
+    if(!f) return;
+    const url=URL.createObjectURL(f);
+    const img=new Image();
+    img.onload=()=>{
+      const r=decodeQrImage(img);
+      URL.revokeObjectURL(url);
+      if(r){ const el=document.getElementById(textareaId); if(el){ el.value=r; toast("已识别并填入"); } }
+      else toast("未识别到二维码，请换一张图片");
+    };
+    img.onerror=()=>{ URL.revokeObjectURL(url); toast("图片读取失败"); };
+    img.src=url;
+  };
+  input.click();
 }
 
 /* 检查 localDescription 中是否含有「真实 IP 的 host 候选」（非 mDNS） */
@@ -535,7 +540,7 @@ async function startInvite(){
       <div class="row"><button onclick="copyText(document.getElementById('codeOut').value)">复制邀请码</button><button class="ghost" onclick="showQrCode(document.getElementById('codeOut').value,'邀请码二维码')">📱 二维码</button></div>`},
     {step:"第 3 步 · 等对方回发应答码后粘贴", body:`
       <textarea class="codebox" id="codeIn" placeholder="在此粘贴对方回发的应答码..."></textarea>
-      <div class="row"><button onclick="finalizeOffer()">完成连接</button><button class="ghost" onclick="scanTo('codeIn')">📷 扫码导入应答码</button></div>`}
+      <div class="row"><button onclick="finalizeOffer()">完成连接</button><button class="ghost" onclick="scanTo('codeIn')">📷 相机扫码</button><button class="ghost" onclick="uploadQrTo('codeIn')">📁 上传二维码</button></div>`}
   ]);
 }
 async function finalizeOffer(){
@@ -563,7 +568,7 @@ async function startAccept(){
     {step:"第 2 步 · 你是被邀方", body:`
       <p style="font-size:12px;color:var(--mut)">粘贴对方发来的<b>邀请码</b>：</p>
       <textarea class="codebox" id="codeIn" placeholder="在此粘贴邀请码..."></textarea>
-      <div class="row"><button onclick="acceptOffer()">生成应答码</button><button class="ghost" onclick="scanTo('codeIn')">📷 扫码导入邀请码</button></div>`},
+      <div class="row"><button onclick="acceptOffer()">生成应答码</button><button class="ghost" onclick="scanTo('codeIn')">📷 相机扫码</button><button class="ghost" onclick="uploadQrTo('codeIn')">📁 上传二维码</button></div>`},
     {step:"生成后 · 把应答码回发给对方", body:`
       <textarea class="codebox" id="codeOut" readonly placeholder="应答码将显示在这里..."></textarea>
       <div class="row"><button onclick="copyText(document.getElementById('codeOut').value)">复制应答码</button><button class="ghost" onclick="showQrCode(document.getElementById('codeOut').value,'应答码二维码')">📱 二维码</button></div>`}

@@ -1616,15 +1616,56 @@ function renderAudioInto(el, a){
   const transferring=!!st;
   let body='';
   if(url){
-    body=`<audio controls preload="metadata" src="${url}" title="语音消息"></audio>`;
+    body=`<div class="aud-msg" data-aid="${a.aid}">
+      <button class="aud-play" onclick="toggleAudioPlay('${a.aid}')" title="播放/暂停">▶</button>
+      <div class="aud-track" onclick="seekAudio('${a.aid}', event)" title="点击定位"><div class="aud-fill" id="audfill-${a.aid}"></div></div>
+      <span class="aud-dur" id="auddur-${a.aid}">0:00</span>
+    </div>`;
   }else if(transferring){
     const pct = st && st.size ? Math.min(100, Math.round(st.received/st.size*100)) : 0;
-    body=`<div class="img-expired"><div style="text-align:center"><span class="spinner" style="margin-right:6px"></span>${pct}%</div></div>`;
+    body=`<div class="aud-msg"><span class="spinner" style="margin-right:6px"></span>接收中 ${pct}%</div>`;
   }else{
-    body=`<div class="img-expired">（语音已失效）</div>`;
+    body=`<div class="aud-msg aud-expired">语音已失效</div>`;
   }
   const readTag = a.dir==='out' && a.ts ? `<span class="read-tag" data-ts="${a.ts}"></span>` : '';
   el.innerHTML=body+`<div class="img-info">${fmtTime(a.ts||nowTs())}${readTag}</div>`;
+}
+/* 自定义语音播放器（替代原生 <audio controls>，样式统一、可点击进度条定位） */
+const audioPlayers = new Map(); // aid -> HTMLAudioElement
+function fmtAudioTime(s){
+  if(!s || !isFinite(s)) return '0:00';
+  const m=Math.floor(s/60), ss=Math.floor(s%60);
+  return m+':'+String(ss).padStart(2,'0');
+}
+function toggleAudioPlay(aid){
+  const url=audioUrls.get(aid); if(!url) return;
+  let au=audioPlayers.get(aid);
+  if(!au){
+    au=new Audio(url); audioPlayers.set(aid, au);
+    const sync=()=>{
+      const fill=document.getElementById('audfill-'+aid);
+      if(fill && au.duration) fill.style.width=(au.currentTime/au.duration*100)+'%';
+      const dur=document.getElementById('auddur-'+aid);
+      if(dur) dur.textContent=fmtAudioTime(au.duration || au.currentTime);
+    };
+    au.addEventListener('timeupdate', sync);
+    au.addEventListener('loadedmetadata', sync);
+    au.addEventListener('ended', ()=>{
+      const btn=document.querySelector(`.aud-msg[data-aid="${aid}"] .aud-play`);
+      if(btn) btn.textContent='▶';
+      const fill=document.getElementById('audfill-'+aid); if(fill) fill.style.width='0%';
+    });
+  }
+  const btn=document.querySelector(`.aud-msg[data-aid="${aid}"] .aud-play`);
+  if(au.paused){ au.play().catch(()=>{}); if(btn) btn.textContent='⏸'; }
+  else{ au.pause(); if(btn) btn.textContent='▶'; }
+}
+function seekAudio(aid, e){
+  const au=audioPlayers.get(aid); if(!au || !au.duration) return;
+  const track=e.currentTarget;
+  const rect=track.getBoundingClientRect();
+  const ratio=Math.max(0, Math.min(1, (e.clientX-rect.left)/rect.width));
+  au.currentTime=ratio*au.duration;
 }
 function updateAudioProgress(aid){
   const st=audioTransfers.get(aid); if(!st) return;
@@ -1644,26 +1685,43 @@ function startRecord(){
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return toast("麦克风不可用（需 HTTPS 或 localhost）");
   recPressing=true;
   clearTimeout(recReleaseTimer); // 复用窗口内取消释放
+  // 立即显示录音指示，权限申请阶段也有反馈（移动端首次需授权，避免按住无反应）
+  const ind=document.getElementById('recIndicator');
+  const rt=document.getElementById('recTime');
+  if(ind) ind.style.display='flex';
+  if(rt) rt.textContent='准备中…';
   if(recStream && recStream.active){ beginRec(recStream); return; } // 复用已授权的麦克风，免重复申请
   recPending=true;
-  recMime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+  // iOS 不指定 mimeType 让 Safari 自选默认（避免 isTypeSupported 误判导致 MediaRecorder 崩溃），其他平台优先 webm
+  recMime = isIOS ? '' : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : ''));
   navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
     recPending=false;
     recStream=stream;
     if(!recPressing){
       // 权限申请期间用户已松手：保留 stream 供下次复用，提示再按一次（不静默丢弃）
       toast("麦克风已就绪，请按住话筒录音");
+      if(ind) ind.style.display='none';
       scheduleRecRelease();
       return;
     }
     beginRec(stream);
-  }).catch(err=>{ recPending=false; toast("麦克风不可用：" + (err.message||err.name)); });
+  }).catch(err=>{
+    recPending=false;
+    if(ind) ind.style.display='none';
+    toast("麦克风不可用：" + (err.message||err.name));
+  });
 }
 function beginRec(stream){
   recChunks=[];
   try{ mediaRecorder = new MediaRecorder(stream, recMime?{mimeType:recMime}:undefined); }
   catch(e){ mediaRecorder = new MediaRecorder(stream); recMime=''; }
   mediaRecorder.ondataavailable = e=>{ if(e.data && e.data.size>0) recChunks.push(e.data); };
+  mediaRecorder.onerror = e=>{
+    toast("录音出错：" + ((e.error && e.error.message) || ''));
+    const ind2=document.getElementById('recIndicator'); if(ind2) ind2.style.display='none';
+    if(recTimer){ clearInterval(recTimer); recTimer=null; }
+  };
   mediaRecorder.onstop = ()=>{
     recBlob = new Blob(recChunks, {type: recMime || 'audio/webm'});
     if(recBlob.size < 1){ toast("录音为空"); recBlob=null; scheduleRecRelease(); return; }
@@ -1673,7 +1731,7 @@ function beginRec(stream){
     document.getElementById('dlgAudioConfirm').classList.add('show');
     scheduleRecRelease(); // 录音结束，延迟释放麦克风
   };
-  mediaRecorder.start();
+  mediaRecorder.start(250); // timeslice 250ms 分段触发 dataavailable，iOS 某些版本不分段会崩溃
   recStartTs = Date.now();
   document.getElementById('recIndicator').style.display='flex';
   updateRecTime();

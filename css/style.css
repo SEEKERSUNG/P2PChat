@@ -133,12 +133,18 @@
 .msg.video .img-info{font-size:10px;opacity:.7;margin-top:3px;text-align:right}
 .msg.video .img-expired{display:flex;align-items:center;justify-content:center;min-height:100px;background:var(--panel2);border-radius:8px;color:var(--mut);font-size:12px}
 
-/* 语音消息（内嵌播放器，v2.13.0） */
+/* 语音消息（自定义播放器气泡，v2.13.0；v2.13.2 优化展示） */
 .msg.audio{padding:6px;background:transparent;max-width:84%}
 .msg.audio.in{align-self:flex-start}
-.msg.audio audio{width:240px;max-width:220px;height:38px;border-radius:8px;display:block}
+.aud-msg{display:flex;align-items:center;gap:8px;min-width:190px;padding:7px 10px;border-radius:16px;background:var(--panel2)}
+.msg.out .aud-msg{background:rgba(255,255,255,.16)}
+.aud-play{flex:none;width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff;font-size:12px;padding:0;display:flex;align-items:center;justify-content:center;line-height:1}
+.aud-play:hover{background:var(--acc2)}
+.aud-track{flex:1;height:4px;background:rgba(255,255,255,.22);border-radius:2px;overflow:hidden;cursor:pointer;min-width:84px}
+.aud-fill{height:100%;width:0;background:#fff;border-radius:2px;transition:width .1s linear}
+.aud-dur{flex:none;font-size:11px;opacity:.85;font-family:Consolas,monospace;min-width:26px;text-align:right}
+.aud-expired{color:var(--mut);font-size:12px}
 .msg.audio .img-info{font-size:10px;opacity:.7;margin-top:3px;text-align:right}
-.msg.audio .img-expired{display:flex;align-items:center;justify-content:center;min-height:40px;background:var(--panel2);border-radius:8px;color:var(--mut);font-size:12px}
 
   /* 移动端响应式 */
   #btnBack{display:none !important}

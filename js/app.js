@@ -1681,6 +1681,9 @@ let mediaRecorder=null, recChunks=[], recStream=null, recTimer=null, recStartTs=
 function startRecord(){
   if(!currentId) return toast("请先选择联系人");
   if(!connections.has(currentId)) return toast("未连接，无法发送语音");
+  // iOS Safari 的 MediaRecorder 录音会触发进程级崩溃（无法 try/catch 兜底），禁用并提示
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+  if(isIOS) return toast("iOS 录音易致浏览器崩溃，请改用 Edge/Chrome 或电脑端录音");
   if(typeof MediaRecorder === 'undefined') return toast("当前浏览器不支持录音");
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return toast("麦克风不可用（需 HTTPS 或 localhost）");
   recPressing=true;
@@ -1692,9 +1695,7 @@ function startRecord(){
   if(rt) rt.textContent='准备中…';
   if(recStream && recStream.active){ beginRec(recStream); return; } // 复用已授权的麦克风，免重复申请
   recPending=true;
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-  // iOS 不指定 mimeType 让 Safari 自选默认（避免 isTypeSupported 误判导致 MediaRecorder 崩溃），其他平台优先 webm
-  recMime = isIOS ? '' : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : ''));
+  recMime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
   navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
     recPending=false;
     recStream=stream;
@@ -1723,7 +1724,7 @@ function beginRec(stream){
     if(recTimer){ clearInterval(recTimer); recTimer=null; }
   };
   mediaRecorder.onstop = ()=>{
-    recBlob = new Blob(recChunks, {type: recMime || 'audio/webm'});
+    recBlob = new Blob(recChunks, {type: (mediaRecorder.mimeType) || recMime || 'audio/webm'});
     if(recBlob.size < 1){ toast("录音为空"); recBlob=null; scheduleRecRelease(); return; }
     const preview=document.getElementById('recPreview');
     if(preview.src) URL.revokeObjectURL(preview.src);
@@ -1775,6 +1776,8 @@ async function sendRecordedAudio(){
 (function(){
   const mic=document.getElementById('btnMic');
   if(!mic) return;
+  const rp=document.getElementById('recPreview');
+  if(rp) rp.addEventListener('error', ()=>toast("录音回放失败，格式可能不受支持"));
   let pressing=false;
   const down=e=>{ e.preventDefault(); pressing=true; startRecord(); };
   const up=()=>{ if(pressing){ pressing=false; stopRecord(); } };

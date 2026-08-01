@@ -1155,20 +1155,21 @@ document.getElementById('attachPop').addEventListener('click', e=>{ // 选中任
 document.addEventListener('click', ()=>closeAttachMenu()); // 点外部关闭
 
 /* 图片查看器：页内放大/缩小/拖动，替代 window.open（iOS 不响应、安卓/PC 开新标签页） */
-let ivScale=1, ivX=0, ivY=0;
+let ivScale=1, ivX=0, ivY=0, ivMoved=false, ivClickTimer=null;
 function ivApply(){
   const img=document.getElementById('ivImg');
   if(img) img.style.transform=`translate(${ivX}px, ${ivY}px) scale(${ivScale})`;
 }
 function openImageview(src){
   if(!src) return;
-  ivScale=1; ivX=0; ivY=0;
+  ivScale=1; ivX=0; ivY=0; ivMoved=false;
+  clearTimeout(ivClickTimer);
   const img=document.getElementById('ivImg');
   img.src=src;
   ivApply();
   document.getElementById('dlgImageview').classList.add('show');
 }
-function closeImageview(){ document.getElementById('dlgImageview').classList.remove('show'); }
+function closeImageview(){ clearTimeout(ivClickTimer); document.getElementById('dlgImageview').classList.remove('show'); }
 function ivZoom(dir){
   ivScale = Math.max(1, Math.min(5, +(ivScale + dir*0.3).toFixed(2)));
   if(ivScale<=1){ ivScale=1; ivX=0; ivY=0; }
@@ -1179,14 +1180,20 @@ function ivReset(){ ivScale=1; ivX=0; ivY=0; ivApply(); }
   const ov=document.getElementById('dlgImageview');
   const img=document.getElementById('ivImg');
   if(!ov || !img) return;
-  ov.addEventListener('click', e=>{ // 点背景关闭（点图片/工具栏不关）
-    if(e.target===ov || e.target.classList.contains('iv-stage') || e.target===img) closeImageview();
+  ov.addEventListener('click', e=>{
+    if(ivMoved){ ivMoved=false; return; } // 拖动后的合成 click 不关闭
+    if(e.target===ov || e.target.classList.contains('iv-stage')){ closeImageview(); return; } // 点背景关闭
+    if(e.target===img){
+      // 点图片：延迟关闭，留出双击缩放窗口；放大状态下点图片不关闭（避免误关，用背景/叉号关闭）
+      clearTimeout(ivClickTimer);
+      ivClickTimer=setTimeout(()=>{ if(ivScale<=1) closeImageview(); }, 250);
+    }
   });
-  img.addEventListener('dblclick', e=>{ e.stopPropagation(); ivScale = ivScale>=2.5 ? 1 : 2.5; if(ivScale===1){ivX=0;ivY=0;} ivApply(); });
+  img.addEventListener('dblclick', e=>{ e.stopPropagation(); clearTimeout(ivClickTimer); ivScale = ivScale>=2.5 ? 1 : 2.5; if(ivScale===1){ivX=0;ivY=0;} ivApply(); });
   ov.addEventListener('wheel', e=>{ e.preventDefault(); ivZoom(e.deltaY<0?1:-1); }, {passive:false});
   let drag=null;
-  const start=(x,y)=>{ drag={x,y,ox:ivX,oy:ivY}; };
-  const move=(x,y)=>{ if(drag){ ivX=drag.ox+(x-drag.x); ivY=drag.oy+(y-drag.y); ivApply(); } };
+  const start=(x,y)=>{ drag={x,y,ox:ivX,oy:ivY}; ivMoved=false; };
+  const move=(x,y)=>{ if(drag){ ivX=drag.ox+(x-drag.x); ivY=drag.oy+(y-drag.y); ivApply(); ivMoved=true; } };
   const end=()=>{ drag=null; };
   img.addEventListener('mousedown', e=>{ if(ivScale>1){ e.preventDefault(); start(e.clientX,e.clientY); } });
   window.addEventListener('mousemove', e=>move(e.clientX,e.clientY));

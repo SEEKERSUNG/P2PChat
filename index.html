@@ -11,7 +11,7 @@
   <!-- 侧栏 -->
   <aside id="sidebar">
     <div class="side-head">
-      <h1>🌍 P2PChat<a class="gh-link" href="https://github.com/SEEKERSUNG/P2PChat" target="_blank" rel="noopener" title="GitHub 源码仓库">GitHub ↗</a><span class="ver">v2.12.2</span></h1>
+      <h1>🌍 P2PChat<a class="gh-link" href="https://github.com/SEEKERSUNG/P2PChat" target="_blank" rel="noopener" title="GitHub 源码仓库">GitHub ↗</a><span class="ver">v2.12.3</span></h1>
       <div class="me">我：<b id="myName">—</b> <span class="pill" id="myId">—</span></div>
       <div class="toolbar">
         <button onclick="startInvite()">➕ 新建连接</button>
@@ -218,20 +218,18 @@
 
 <!-- 图片查看器（页内放大缩放，v2.12.1） -->
 <div class="overlay" id="dlgImageview">
-  <div class="iv-stage">
-    <img id="ivImg" alt="图片预览">
-    <div class="iv-toolbar">
-      <button class="ghost sm" onclick="ivZoom(-1)" title="缩小">−</button>
-      <button class="ghost sm" onclick="ivReset()" title="重置">重置</button>
-      <button class="ghost sm" onclick="ivZoom(1)" title="放大">+</button>
-      <button class="ghost sm" onclick="closeImageview()" title="关闭">✕</button>
-    </div>
+  <div class="iv-stage"><img id="ivImg" alt="图片预览"></div>
+  <div class="iv-toolbar">
+    <button class="ghost sm" onclick="ivZoom(-1)" title="缩小">−</button>
+    <button class="ghost sm" onclick="ivReset()" title="重置">1:1</button>
+    <button class="ghost sm" onclick="ivZoom(1)" title="放大">+</button>
+    <button class="ghost sm" onclick="closeImageview()" title="关闭">✕</button>
   </div>
 </div>
 
 <div class="toast" id="toast"></div>
 <script src="lib/qrcode-generator.js"></script>
 <script src="lib/jsQR.min.js"></script>
-<script src="js/app.js?v=2.12.2"></script>
+<script src="js/app.js?v=2.12.3"></script>
 </body>
 </html>

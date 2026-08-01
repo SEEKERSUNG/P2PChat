@@ -1181,7 +1181,7 @@ function ivReset(){ ivScale=1; ivX=0; ivY=0; ivApply(); }
   const img=document.getElementById('ivImg');
   if(!ov || !img) return;
   ov.addEventListener('click', e=>{
-    if(ivMoved){ ivMoved=false; return; } // 拖动后的合成 click 不关闭
+    if(ivMoved){ ivMoved=false; return; } // 拖动/pinch 后的合成 click 不关闭
     if(e.target===ov || e.target.classList.contains('iv-stage')){ closeImageview(); return; } // 点背景关闭
     if(e.target===img){
       // 点图片：延迟关闭，留出双击缩放窗口；放大状态下点图片不关闭（避免误关，用背景/叉号关闭）
@@ -1191,16 +1191,43 @@ function ivReset(){ ivScale=1; ivX=0; ivY=0; ivApply(); }
   });
   img.addEventListener('dblclick', e=>{ e.stopPropagation(); clearTimeout(ivClickTimer); ivScale = ivScale>=2.5 ? 1 : 2.5; if(ivScale===1){ivX=0;ivY=0;} ivApply(); });
   ov.addEventListener('wheel', e=>{ e.preventDefault(); ivZoom(e.deltaY<0?1:-1); }, {passive:false});
+  // 鼠标拖动平移（PC，放大时）
   let drag=null;
-  const start=(x,y)=>{ drag={x,y,ox:ivX,oy:ivY}; ivMoved=false; };
-  const move=(x,y)=>{ if(drag){ ivX=drag.ox+(x-drag.x); ivY=drag.oy+(y-drag.y); ivApply(); ivMoved=true; } };
-  const end=()=>{ drag=null; };
-  img.addEventListener('mousedown', e=>{ if(ivScale>1){ e.preventDefault(); start(e.clientX,e.clientY); } });
-  window.addEventListener('mousemove', e=>move(e.clientX,e.clientY));
-  window.addEventListener('mouseup', end);
-  img.addEventListener('touchstart', e=>{ if(ivScale>1 && e.touches.length===1){ start(e.touches[0].clientX,e.touches[0].clientY); } }, {passive:true});
-  img.addEventListener('touchmove', e=>{ if(ivScale>1 && e.touches.length===1){ e.preventDefault(); move(e.touches[0].clientX,e.touches[0].clientY); } }, {passive:false});
-  img.addEventListener('touchend', end);
+  img.addEventListener('mousedown', e=>{ if(ivScale>1){ e.preventDefault(); drag={x:e.clientX,y:e.clientY,ox:ivX,oy:ivY}; ivMoved=false; } });
+  window.addEventListener('mousemove', e=>{ if(drag){ ivX=drag.ox+(e.clientX-drag.x); ivY=drag.oy+(e.clientY-drag.y); ivApply(); ivMoved=true; } });
+  window.addEventListener('mouseup', ()=>{ drag=null; });
+  // 触摸：单指拖动（放大时）+ 双指 pinch 缩放
+  const tdist=t=>Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY);
+  let touch=null;
+  img.addEventListener('touchstart', e=>{
+    if(e.touches.length===2){
+      touch={mode:'pinch', d0:tdist(e.touches), s0:ivScale};
+      e.preventDefault();
+    }else if(e.touches.length===1 && ivScale>1){
+      touch={mode:'pan', x:e.touches[0].clientX, y:e.touches[0].clientY, ox:ivX, oy:ivY};
+      ivMoved=false;
+    }
+  }, {passive:false});
+  img.addEventListener('touchmove', e=>{
+    if(!touch) return;
+    if(touch.mode==='pinch' && e.touches.length===2){
+      ivScale = Math.max(1, Math.min(5, +(touch.s0 * tdist(e.touches)/touch.d0).toFixed(2)));
+      if(ivScale<=1){ ivScale=1; ivX=0; ivY=0; }
+      ivApply(); e.preventDefault();
+    }else if(touch.mode==='pan' && e.touches.length===1){
+      ivX=touch.ox+(e.touches[0].clientX-touch.x);
+      ivY=touch.oy+(e.touches[0].clientY-touch.y);
+      ivApply(); ivMoved=true; e.preventDefault();
+    }
+  }, {passive:false});
+  img.addEventListener('touchend', e=>{
+    if(e.touches.length===0){ touch=null; }
+    else if(e.touches.length===1 && touch && touch.mode==='pinch'){
+      // 双指变单指：转为平移基线
+      touch={mode:'pan', x:e.touches[0].clientX, y:e.touches[0].clientY, ox:ivX, oy:ivY};
+      ivMoved=false;
+    }
+  });
 })();
 
 document.getElementById('fileSendInput').addEventListener('change', e=>{

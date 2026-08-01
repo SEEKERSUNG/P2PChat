@@ -1146,6 +1146,8 @@ function pickFile(){ document.getElementById('fileSendInput').click(); }
 /* 附件菜单：聚合 拍照/图片/视频/录像/文件 到「＋」按钮 */
 function toggleAttachMenu(e){
   e && e.stopPropagation();
+  if(!currentId){ toast("请先选择联系人"); return; }
+  if(!connections.has(currentId)){ toast("未连接，无法发送图片/视频/文件，请先重连"); return; }
   document.getElementById('attachPop').classList.toggle('show');
 }
 function closeAttachMenu(){ document.getElementById('attachPop').classList.remove('show'); }
@@ -1577,7 +1579,7 @@ function renderTopbar(){
   const st=document.getElementById('topStatus');
   const connected=connections.has(currentId);
   if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; if(ba) ba.disabled=false; }
-  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=false; if(ba) ba.disabled=true; closeAttachMenu(); } // textarea 始终可用（离线可发送 pending 消息），附件需 file 通道
+  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=false; if(ba) ba.disabled=false; closeAttachMenu(); } // textarea 始终可用（离线可发送 pending 消息）；附件按钮保持可点击以触发离线提示（toggleAttachMenu 拦截）
   btn.style.display='';
   rc.style.display= connected? 'none':'inline-block'; // 仅未连接时显示重连按钮
   if(!connected && !hasMessages(currentId)) document.getElementById('messages').innerHTML=notConnHtml();

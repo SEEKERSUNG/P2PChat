@@ -103,7 +103,14 @@ function selectContact(id, skipLastRead){
   if(isMobile() && id){ try{ history.pushState({p2pchat:'chat'},''); }catch(e){} }
 }
 function goBack(){ currentId=null; updateMobileView(); renderContacts(); renderChat(); }
-function backBtn(){ if(isMobile() && currentId){ try{ history.back(); }catch(e){ goBack(); } } else { goBack(); } }
+function backBtn(){
+  // 优先 history.back() 让 popstate 统一处理并同步历史栈；
+  // 但仅当栈顶确为 chat 条目时——PC 下进入聊天不 pushState，缩窗到手机后历史栈无对应项，
+  // 盲目 back 会离开应用或卡死，此时直接 goBack() 退回列表。
+  if(currentId && history.state && history.state.p2pchat==='chat'){
+    try{ history.back(); }catch(e){ goBack(); }
+  } else { goBack(); }
+}
 function updateMobileView(){
   const app=document.getElementById('app');
   if(currentId) app.classList.add('show-chat'); else app.classList.remove('show-chat');
@@ -1454,7 +1461,7 @@ let onboarding=false; // 引导态：导入成功后需关闭引导弹窗
 function boot(){
   renderAll();
   refreshMyIp();
-  if(isMobile()){ try{ history.pushState({p2pchat:'root'},''); }catch(e){} } // 注入根历史项，拦截列表页返回键
+  syncMobileHistory(); // 注入根历史项，拦截列表页返回键
   if(!localStorage.getItem(STORE_KEY)){ showOnboard(); } // 首次启动无数据 → 引导
 }
 function showOnboard(){ document.getElementById('dlgOnboard').classList.add('show'); }
@@ -1551,6 +1558,21 @@ function toast(msg, ms){
 }
 
 let exitAllowed=false; // 用户已在退出确认中选择"退出"，放行浏览器返回
+// 移动端历史栈同步：确保栈顶有与当前视图匹配的拦截条目（root/chat）。
+// PC 下 boot/selectContact 不 pushState，缩窗到手机后补注入，让返回键与 backBtn 行为一致。
+function syncMobileHistory(){
+  if(!isMobile()) return;
+  const want = currentId ? 'chat' : 'root';
+  if(!(history.state && history.state.p2pchat===want)){
+    try{ history.pushState({p2pchat:want}, ''); }catch(e){}
+  }
+}
+if(window.matchMedia){
+  const mq = window.matchMedia('(max-width:680px)');
+  const onMq = ()=>syncMobileHistory();
+  if(mq.addEventListener) mq.addEventListener('change', onMq);
+  else if(mq.addListener) mq.addListener(onMq); // 旧版 Safari 兼容
+}
 window.addEventListener('popstate', ()=>{
   if(currentId){ goBack(); return; } // 聊天视图 → 回到列表
   if(isMobile() && !exitAllowed){ showExitConfirm(); return; } // 列表视图 → 拦截退出，弹确认

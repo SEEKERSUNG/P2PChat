@@ -11,7 +11,7 @@
   <!-- 侧栏 -->
   <aside id="sidebar">
     <div class="side-head">
-      <h1>🌍 P2PChat<a class="gh-link" href="https://github.com/SEEKERSUNG/P2PChat" target="_blank" rel="noopener" title="GitHub 源码仓库">GitHub ↗</a><span class="ver">v2.12.0</span></h1>
+      <h1>🌍 P2PChat<a class="gh-link" href="https://github.com/SEEKERSUNG/P2PChat" target="_blank" rel="noopener" title="GitHub 源码仓库">GitHub ↗</a><span class="ver">v2.12.1</span></h1>
       <div class="me">我：<b id="myName">—</b> <span class="pill" id="myId">—</span></div>
       <div class="toolbar">
         <button onclick="startInvite()">➕ 新建连接</button>
@@ -45,7 +45,7 @@
     <div class="composer">
       <textarea id="inputMsg" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled
         onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMsg()}"></textarea>
-      <button class="ghost" id="btnAttach" onclick="toggleAttachMenu(event)" title="发送附件" disabled>＋</button>
+      <button class="ghost" id="btnAttach" onclick="toggleAttachMenu(event)" title="发送附件" disabled><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 4v12M4 10h12"/></svg></button>
       <button onclick="sendMsg()">发送</button>
       <div class="attach-pop" id="attachPop">
         <button onclick="pickCamera()"><span>📷</span>拍照</button>
@@ -216,9 +216,22 @@
   </div>
 </div>
 
+<!-- 图片查看器（页内放大缩放，v2.12.1） -->
+<div class="overlay" id="dlgImageview">
+  <div class="iv-stage">
+    <img id="ivImg" alt="图片预览">
+    <div class="iv-toolbar">
+      <button class="ghost sm" onclick="ivZoom(-1)" title="缩小">−</button>
+      <button class="ghost sm" onclick="ivReset()" title="重置">重置</button>
+      <button class="ghost sm" onclick="ivZoom(1)" title="放大">+</button>
+      <button class="ghost sm" onclick="closeImageview()" title="关闭">✕</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <script src="lib/qrcode-generator.js"></script>
 <script src="lib/jsQR.min.js"></script>
-<script src="js/app.js?v=2.12.0"></script>
+<script src="js/app.js?v=2.12.1"></script>
 </body>
 </html>

@@ -701,14 +701,17 @@ function onChannelMsg(channel, data){
     if(target && target.incomingFile){
       target.incomingFile.chunks.push(data);
       target.incomingFile.received += data.byteLength;
+      const stf=fileTransfers.get(target.incomingFile.fid); if(stf) stf.received=target.incomingFile.received;
       updateFileProgress(target.incomingFile.fid);
     }else if(target && target.incomingImage){
       target.incomingImage.chunks.push(data);
       target.incomingImage.received += data.byteLength;
+      const sti=imageTransfers.get(target.incomingImage.iid); if(sti) sti.received=target.incomingImage.received;
       updateImageProgress(target.incomingImage.iid);
     }else if(target && target.incomingVideo){
       target.incomingVideo.chunks.push(data);
       target.incomingVideo.received += data.byteLength;
+      const stv=videoTransfers.get(target.incomingVideo.vid); if(stv) stv.received=target.incomingVideo.received;
       updateVideoProgress(target.incomingVideo.vid);
     }
     return;
@@ -1150,6 +1153,49 @@ document.getElementById('attachPop').addEventListener('click', e=>{ // 选中任
   if(e.target.closest('button')) closeAttachMenu();
 });
 document.addEventListener('click', ()=>closeAttachMenu()); // 点外部关闭
+
+/* 图片查看器：页内放大/缩小/拖动，替代 window.open（iOS 不响应、安卓/PC 开新标签页） */
+let ivScale=1, ivX=0, ivY=0;
+function ivApply(){
+  const img=document.getElementById('ivImg');
+  if(img) img.style.transform=`translate(${ivX}px, ${ivY}px) scale(${ivScale})`;
+}
+function openImageview(src){
+  if(!src) return;
+  ivScale=1; ivX=0; ivY=0;
+  const img=document.getElementById('ivImg');
+  img.src=src;
+  ivApply();
+  document.getElementById('dlgImageview').classList.add('show');
+}
+function closeImageview(){ document.getElementById('dlgImageview').classList.remove('show'); }
+function ivZoom(dir){
+  ivScale = Math.max(1, Math.min(5, +(ivScale + dir*0.3).toFixed(2)));
+  if(ivScale<=1){ ivScale=1; ivX=0; ivY=0; }
+  ivApply();
+}
+function ivReset(){ ivScale=1; ivX=0; ivY=0; ivApply(); }
+(function(){
+  const ov=document.getElementById('dlgImageview');
+  const img=document.getElementById('ivImg');
+  if(!ov || !img) return;
+  ov.addEventListener('click', e=>{ // 点背景关闭（点图片/工具栏不关）
+    if(e.target===ov || e.target.classList.contains('iv-stage') || e.target===img) closeImageview();
+  });
+  img.addEventListener('dblclick', e=>{ e.stopPropagation(); ivScale = ivScale>=2.5 ? 1 : 2.5; if(ivScale===1){ivX=0;ivY=0;} ivApply(); });
+  ov.addEventListener('wheel', e=>{ e.preventDefault(); ivZoom(e.deltaY<0?1:-1); }, {passive:false});
+  let drag=null;
+  const start=(x,y)=>{ drag={x,y,ox:ivX,oy:ivY}; };
+  const move=(x,y)=>{ if(drag){ ivX=drag.ox+(x-drag.x); ivY=drag.oy+(y-drag.y); ivApply(); } };
+  const end=()=>{ drag=null; };
+  img.addEventListener('mousedown', e=>{ if(ivScale>1){ e.preventDefault(); start(e.clientX,e.clientY); } });
+  window.addEventListener('mousemove', e=>move(e.clientX,e.clientY));
+  window.addEventListener('mouseup', end);
+  img.addEventListener('touchstart', e=>{ if(ivScale>1 && e.touches.length===1){ start(e.touches[0].clientX,e.touches[0].clientY); } }, {passive:true});
+  img.addEventListener('touchmove', e=>{ if(ivScale>1 && e.touches.length===1){ e.preventDefault(); move(e.touches[0].clientX,e.touches[0].clientY); } }, {passive:false});
+  img.addEventListener('touchend', end);
+})();
+
 document.getElementById('fileSendInput').addEventListener('change', e=>{
   try{
     const f=e.target.files[0]; e.target.value=''; if(!f) return;
@@ -1329,7 +1375,7 @@ function renderImageInto(el, img){
   const transferring=!!st;
   let body='';
   if(url){
-    body=`<img src="${url}" alt="${escapeHtml(img.name)}" onclick="if(this.src)window.open(this.src)" title="点击查看原图">`;
+    body=`<img src="${url}" alt="${escapeHtml(img.name)}" onclick="openImageview(this.src)" title="点击查看原图">`;
   }else if(transferring){
     const pct = st && st.size ? Math.min(100, Math.round(st.received/st.size*100)) : 0;
     body=`<div class="img-expired"><div style="text-align:center"><span class="spinner" style="margin-right:6px"></span>${pct}%</div></div>`;

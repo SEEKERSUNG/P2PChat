@@ -1636,36 +1636,48 @@ function updateAudioProgress(aid){
 }
 
 /* 录音：按住话筒开始，松手停止并弹确认弹窗（回放/发送/取消） */
-let mediaRecorder=null, recChunks=[], recStream=null, recTimer=null, recStartTs=0, recBlob=null, recMime='', recPending=false, recCancelled=false;
+let mediaRecorder=null, recChunks=[], recStream=null, recTimer=null, recStartTs=0, recBlob=null, recMime='', recPending=false, recPressing=false, recReleaseTimer=null;
 function startRecord(){
   if(!currentId) return toast("请先选择联系人");
   if(!connections.has(currentId)) return toast("未连接，无法发送语音");
   if(typeof MediaRecorder === 'undefined') return toast("当前浏览器不支持录音");
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return toast("麦克风不可用（需 HTTPS 或 localhost）");
-  recCancelled=false; recPending=true;
+  recPressing=true;
+  clearTimeout(recReleaseTimer); // 复用窗口内取消释放
+  if(recStream && recStream.active){ beginRec(recStream); return; } // 复用已授权的麦克风，免重复申请
+  recPending=true;
   recMime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
   navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
     recPending=false;
-    if(recCancelled){ stream.getTracks().forEach(t=>t.stop()); return; } // 松手时仍在申请麦克风，取消
-    recStream=stream; recChunks=[];
-    try{ mediaRecorder = new MediaRecorder(stream, recMime?{mimeType:recMime}:undefined); }
-    catch(e){ mediaRecorder = new MediaRecorder(stream); recMime=''; }
-    mediaRecorder.ondataavailable = e=>{ if(e.data && e.data.size>0) recChunks.push(e.data); };
-    mediaRecorder.onstop = ()=>{
-      recBlob = new Blob(recChunks, {type: recMime || 'audio/webm'});
-      if(recStream){ recStream.getTracks().forEach(t=>t.stop()); recStream=null; }
-      if(recBlob.size < 1){ toast("录音为空"); recBlob=null; return; }
-      const preview=document.getElementById('recPreview');
-      if(preview.src) URL.revokeObjectURL(preview.src);
-      preview.src = URL.createObjectURL(recBlob);
-      document.getElementById('dlgAudioConfirm').classList.add('show');
-    };
-    mediaRecorder.start();
-    recStartTs = Date.now();
-    document.getElementById('recIndicator').style.display='flex';
-    updateRecTime();
-    recTimer = setInterval(updateRecTime, 200);
+    recStream=stream;
+    if(!recPressing){
+      // 权限申请期间用户已松手：保留 stream 供下次复用，提示再按一次（不静默丢弃）
+      toast("麦克风已就绪，请按住话筒录音");
+      scheduleRecRelease();
+      return;
+    }
+    beginRec(stream);
   }).catch(err=>{ recPending=false; toast("麦克风不可用：" + (err.message||err.name)); });
+}
+function beginRec(stream){
+  recChunks=[];
+  try{ mediaRecorder = new MediaRecorder(stream, recMime?{mimeType:recMime}:undefined); }
+  catch(e){ mediaRecorder = new MediaRecorder(stream); recMime=''; }
+  mediaRecorder.ondataavailable = e=>{ if(e.data && e.data.size>0) recChunks.push(e.data); };
+  mediaRecorder.onstop = ()=>{
+    recBlob = new Blob(recChunks, {type: recMime || 'audio/webm'});
+    if(recBlob.size < 1){ toast("录音为空"); recBlob=null; scheduleRecRelease(); return; }
+    const preview=document.getElementById('recPreview');
+    if(preview.src) URL.revokeObjectURL(preview.src);
+    preview.src = URL.createObjectURL(recBlob);
+    document.getElementById('dlgAudioConfirm').classList.add('show');
+    scheduleRecRelease(); // 录音结束，延迟释放麦克风
+  };
+  mediaRecorder.start();
+  recStartTs = Date.now();
+  document.getElementById('recIndicator').style.display='flex';
+  updateRecTime();
+  recTimer = setInterval(updateRecTime, 200);
 }
 function updateRecTime(){
   const s = Math.floor((Date.now()-recStartTs)/1000);
@@ -1673,10 +1685,20 @@ function updateRecTime(){
   const ss = String(s%60).padStart(2,'0');
   const el=document.getElementById('recTime'); if(el) el.textContent = mm+':'+ss;
 }
+/* 延迟释放麦克风：松手后 10s 内未再录音则关闭 tracks（灭指示灯、释放硬件），
+   期间再按住可复用 stream 免重新申请权限。 */
+function scheduleRecRelease(){
+  clearTimeout(recReleaseTimer);
+  recReleaseTimer = setTimeout(()=>{
+    if(mediaRecorder && mediaRecorder.state!=='inactive') return; // 仍在录音，跳过
+    if(recStream){ recStream.getTracks().forEach(t=>t.stop()); recStream=null; }
+  }, 10000);
+}
 function stopRecord(){
+  recPressing=false;
   if(recTimer){ clearInterval(recTimer); recTimer=null; }
   const ind=document.getElementById('recIndicator'); if(ind) ind.style.display='none';
-  if(recPending){ recCancelled=true; return; } // 麦克风申请中，标记取消
+  if(recPending) return; // 权限申请中，等申请结果按 recPressing 处理（不取消）
   if(mediaRecorder && mediaRecorder.state!=='inactive'){ try{ mediaRecorder.stop(); }catch(e){} }
 }
 function cancelRecordedAudio(){
@@ -1930,6 +1952,8 @@ async function doLogout(backup){
   localStorage.removeItem(STORE_KEY);
   channelMap.forEach(i=>{try{i.pc.close();}catch(e){}});
   connections.forEach(conn=>{ for(const [seq,p] of conn.pending) clearTimeout(p.timer); conn.pending.clear(); stopHeartbeat(conn); });
+  if(recReleaseTimer){ clearTimeout(recReleaseTimer); recReleaseTimer=null; }
+  if(recStream){ try{ recStream.getTracks().forEach(t=>t.stop()); }catch(e){} recStream=null; }
   connections.clear(); channelMap.clear(); revivable.clear(); peerBye.clear();
   autoReviveTimers.forEach(t=>clearTimeout(t)); autoReviveTimers.clear(); autoReviveRetries.clear();
   currentId=null; clearConnectWatchdog();
@@ -2045,7 +2069,11 @@ function confirmExit(yes){
   if(yes){ exitAllowed=true; try{ history.back(); }catch(e){} } // 放行，离开页面
   else { try{ history.pushState({p2pchat:'root'},''); }catch(e){} } // 取消：重新拦截下次返回
 }
-window.addEventListener('beforeunload', ()=>{ channelMap.forEach(i=>{try{i.pc.close();}catch(e){}}); });
+window.addEventListener('beforeunload', ()=>{
+  channelMap.forEach(i=>{try{i.pc.close();}catch(e){}});
+  if(recReleaseTimer) clearTimeout(recReleaseTimer);
+  if(recStream){ try{ recStream.getTracks().forEach(t=>t.stop()); }catch(e){} recStream=null; }
+});
 
 /* 启动 */
 boot();

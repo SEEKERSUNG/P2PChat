@@ -11,7 +11,7 @@
   <!-- 侧栏 -->
   <aside id="sidebar">
     <div class="side-head">
-      <h1>🌍 P2PChat<a class="gh-link" href="https://github.com/SEEKERSUNG/P2PChat" target="_blank" rel="noopener" title="GitHub 源码仓库">GitHub ↗</a><span class="ver">v2.12.5</span></h1>
+      <h1>🌍 P2PChat<a class="gh-link" href="https://github.com/SEEKERSUNG/P2PChat" target="_blank" rel="noopener" title="GitHub 源码仓库">GitHub ↗</a><span class="ver">v2.13.0</span></h1>
       <div class="me">我：<b id="myName">—</b> <span class="pill" id="myId">—</span></div>
       <div class="toolbar">
         <button onclick="startInvite()">➕ 新建连接</button>
@@ -43,6 +43,7 @@
     </div>
     <div id="messages"></div>
     <div class="composer">
+      <button class="ghost" id="btnMic" title="按住录音，松手结束" disabled><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg></button>
       <textarea id="inputMsg" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled
         onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMsg()}"></textarea>
       <button class="ghost" id="btnAttach" onclick="toggleAttachMenu(event)" title="发送附件" disabled><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 4v12M4 10h12"/></svg></button>
@@ -227,9 +228,27 @@
   </div>
 </div>
 
+<!-- 录音指示器（v2.13.0） -->
+<div class="rec-indicator" id="recIndicator" style="display:none">
+  <span class="rec-dot"></span><span id="recTime">00:00</span><span class="rec-hint">松手结束</span>
+</div>
+
+<!-- 录音确认弹窗（v2.13.0） -->
+<div class="overlay" id="dlgAudioConfirm">
+  <div class="modal">
+    <h2>语音消息</h2>
+    <div class="desc">回放确认后发送，或取消丢弃。</div>
+    <audio id="recPreview" controls style="width:100%"></audio>
+    <div class="actions">
+      <button class="danger" onclick="cancelRecordedAudio()">取消</button>
+      <button onclick="sendRecordedAudio()">发送</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <script src="lib/qrcode-generator.js"></script>
 <script src="lib/jsQR.min.js"></script>
-<script src="js/app.js?v=2.12.5"></script>
+<script src="js/app.js?v=2.13.0"></script>
 </body>
 </html>

@@ -691,7 +691,7 @@ function onChannelMsg(channel, data){
   // 二进制分块到达 file 通道时需回溯同 PC 的 chat 条目查找 incoming 状态
   if(typeof data !== 'string'){
     let target = channelMap.get(channel);
-    if(target && !target.incomingFile && !target.incomingImage && !target.incomingVideo){
+    if(target && !target.incomingFile && !target.incomingImage && !target.incomingVideo && !target.incomingAudio){
       for(const [ch, inf] of channelMap){
         if(inf.pc===target.pc && inf.isChat && inf.contactId===target.contactId){
           target = inf; break;
@@ -713,6 +713,11 @@ function onChannelMsg(channel, data){
       target.incomingVideo.received += data.byteLength;
       const stv=videoTransfers.get(target.incomingVideo.vid); if(stv) stv.received=target.incomingVideo.received;
       updateVideoProgress(target.incomingVideo.vid);
+    }else if(target && target.incomingAudio){
+      target.incomingAudio.chunks.push(data);
+      target.incomingAudio.received += data.byteLength;
+      const sta=audioTransfers.get(target.incomingAudio.aid); if(sta) sta.received=target.incomingAudio.received;
+      updateAudioProgress(target.incomingAudio.aid);
     }
     return;
   }
@@ -748,6 +753,8 @@ function onChannelMsg(channel, data){
   else if(m.type==='image-end'){ finishReceiveImage(cId, info, m.iid); }
   else if(m.type==='video-meta'){ startReceiveVideo(cId, info, m); if(cId===currentId) sendReadReceipt(cId); }
   else if(m.type==='video-end'){ finishReceiveVideo(cId, info, m.vid); }
+  else if(m.type==='audio-meta'){ startReceiveAudio(cId, info, m); if(cId===currentId) sendReadReceipt(cId); }
+  else if(m.type==='audio-end'){ finishReceiveAudio(cId, info, m.aid); }
   else if(m.type==='read'){
     const c = getContact(cId);
     if(c){
@@ -1542,6 +1549,162 @@ document.getElementById('videoCameraInput').addEventListener('change', e=>{
   }catch(err){ console.error('video camera input:',err); toast('操作失败'); }
 });
 
+/* ===================== 语音消息（按住录音 + 内嵌播放，v2.13.0） ===================== */
+const audioTransfers = new Map();  // aid -> {received,size,dir,contactId,name}（同 image/video 模式）
+const audioUrls = new Map();       // aid -> objectURL（运行时，不持久化）
+
+async function sendAudio(blob){
+  const cId=currentConnId();
+  const conn = connections.get(cId);
+  if(!conn || !conn.file || conn.file.readyState!=='open') return toast("未连接，无法发送语音");
+  const channel=conn.file;
+  if(!channel.bufferedAmountLowThreshold || channel.bufferedAmountLowThreshold<1*1024*1024) channel.bufferedAmountLowThreshold=1*1024*1024;
+  const aid=randId();
+  const mime = blob.type || 'audio/webm';
+  const meta={type:"audio-meta", aid, name:"voice", size:blob.size, mime};
+  /* meta/分块/end 全走同一 file 通道（同 image/video），串行锁防并发分块交错 */
+  const release = await acquireFileLock();
+  try{
+    try{ channel.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
+    audioTransfers.set(aid,{received:0,size:blob.size,dir:'out',contactId:cId,name:"voice"});
+    audioUrls.set(aid, URL.createObjectURL(blob)); // 发送方立即显示播放器
+    addAudioMessage(cId,'out',meta);
+    let offset=0;
+    while(offset<blob.size && channel.readyState==='open'){
+      const buf=await blob.slice(offset, offset+FILE_CHUNK).arrayBuffer();
+      if(channel.bufferedAmount > FILE_BUF_HIGH){
+        try{ await backpressureWait(channel, 30000); }catch(e){ break; }
+      }
+      if(channel.readyState!=='open') break;
+      channel.send(buf);
+      offset+=buf.byteLength;
+      const st=audioTransfers.get(aid); if(st){ st.received=offset; updateAudioProgress(aid); }
+    }
+    if(offset>=blob.size){ try{ channel.send(JSON.stringify({type:"audio-end", aid})); }catch(e){} }
+  }catch(e){ toast("语音发送失败: "+e.message); }
+  finally{ audioTransfers.delete(aid); release(); }
+}
+function startReceiveAudio(cId, info, m){
+  info.incomingAudio={aid:m.aid, name:m.name, size:m.size, mime:m.mime, received:0, chunks:[]};
+  audioTransfers.set(m.aid,{received:0,size:m.size,dir:'in',contactId:cId,name:m.name});
+  addAudioMessage(cId,'in',m);
+}
+function finishReceiveAudio(cId, info, aid){
+  const inc=info.incomingAudio; info.incomingAudio=null;
+  audioTransfers.delete(aid);
+  if(!inc || inc.aid!==aid) return;
+  const blob=new Blob(inc.chunks,{type:inc.mime||'audio/webm'});
+  audioUrls.set(aid, URL.createObjectURL(blob));
+  if(cId===currentId){
+    const el=document.getElementById('aud-'+aid);
+    if(el) renderAudioInto(el,{aid,name:inc.name,size:inc.size,dir:'in'});
+  }
+}
+function addAudioMessage(contactId, dir, meta){
+  if(!store.messages[contactId]) store.messages[contactId]=[];
+  const item={ts:nowTs(), dir, audio:{aid:meta.aid, name:meta.name, size:meta.size}};
+  store.messages[contactId].push(item);
+  const c=getContact(contactId); if(c) c.lastSeen=item.ts;
+  if(dir==='in' && contactId!==currentId){ store.unread[contactId]=(store.unread[contactId]||0)+1; }
+  saveStore();
+  if(contactId===currentId) renderMessages();
+  renderContacts();
+}
+function renderAudioInto(el, a){
+  const url=audioUrls.get(a.aid);
+  const st=audioTransfers.get(a.aid);
+  const transferring=!!st;
+  let body='';
+  if(url){
+    body=`<audio controls preload="metadata" src="${url}" title="语音消息"></audio>`;
+  }else if(transferring){
+    const pct = st && st.size ? Math.min(100, Math.round(st.received/st.size*100)) : 0;
+    body=`<div class="img-expired"><div style="text-align:center"><span class="spinner" style="margin-right:6px"></span>${pct}%</div></div>`;
+  }else{
+    body=`<div class="img-expired">（语音已失效）</div>`;
+  }
+  const readTag = a.dir==='out' && a.ts ? `<span class="read-tag" data-ts="${a.ts}"></span>` : '';
+  el.innerHTML=body+`<div class="img-info">${fmtTime(a.ts||nowTs())}${readTag}</div>`;
+}
+function updateAudioProgress(aid){
+  const st=audioTransfers.get(aid); if(!st) return;
+  if(st.contactId!==currentId) return;
+  const el=document.getElementById('aud-'+aid); if(!el) return;
+  const pct = st.size ? Math.min(100, Math.round(st.received/st.size*100)) : 100;
+  const exp=el.querySelector('.img-expired>div');
+  if(exp) exp.textContent=pct+'%';
+}
+
+/* 录音：按住话筒开始，松手停止并弹确认弹窗（回放/发送/取消） */
+let mediaRecorder=null, recChunks=[], recStream=null, recTimer=null, recStartTs=0, recBlob=null, recMime='', recPending=false, recCancelled=false;
+function startRecord(){
+  if(!currentId) return toast("请先选择联系人");
+  if(!connections.has(currentId)) return toast("未连接，无法发送语音");
+  if(typeof MediaRecorder === 'undefined') return toast("当前浏览器不支持录音");
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return toast("麦克风不可用（需 HTTPS 或 localhost）");
+  recCancelled=false; recPending=true;
+  recMime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
+  navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
+    recPending=false;
+    if(recCancelled){ stream.getTracks().forEach(t=>t.stop()); return; } // 松手时仍在申请麦克风，取消
+    recStream=stream; recChunks=[];
+    try{ mediaRecorder = new MediaRecorder(stream, recMime?{mimeType:recMime}:undefined); }
+    catch(e){ mediaRecorder = new MediaRecorder(stream); recMime=''; }
+    mediaRecorder.ondataavailable = e=>{ if(e.data && e.data.size>0) recChunks.push(e.data); };
+    mediaRecorder.onstop = ()=>{
+      recBlob = new Blob(recChunks, {type: recMime || 'audio/webm'});
+      if(recStream){ recStream.getTracks().forEach(t=>t.stop()); recStream=null; }
+      if(recBlob.size < 1){ toast("录音为空"); recBlob=null; return; }
+      const preview=document.getElementById('recPreview');
+      if(preview.src) URL.revokeObjectURL(preview.src);
+      preview.src = URL.createObjectURL(recBlob);
+      document.getElementById('dlgAudioConfirm').classList.add('show');
+    };
+    mediaRecorder.start();
+    recStartTs = Date.now();
+    document.getElementById('recIndicator').style.display='flex';
+    updateRecTime();
+    recTimer = setInterval(updateRecTime, 200);
+  }).catch(err=>{ recPending=false; toast("麦克风不可用：" + (err.message||err.name)); });
+}
+function updateRecTime(){
+  const s = Math.floor((Date.now()-recStartTs)/1000);
+  const mm = String(Math.floor(s/60)).padStart(2,'0');
+  const ss = String(s%60).padStart(2,'0');
+  const el=document.getElementById('recTime'); if(el) el.textContent = mm+':'+ss;
+}
+function stopRecord(){
+  if(recTimer){ clearInterval(recTimer); recTimer=null; }
+  const ind=document.getElementById('recIndicator'); if(ind) ind.style.display='none';
+  if(recPending){ recCancelled=true; return; } // 麦克风申请中，标记取消
+  if(mediaRecorder && mediaRecorder.state!=='inactive'){ try{ mediaRecorder.stop(); }catch(e){} }
+}
+function cancelRecordedAudio(){
+  const p=document.getElementById('recPreview'); if(p){ if(p.src) URL.revokeObjectURL(p.src); p.src=''; }
+  closeDialog('dlgAudioConfirm');
+  recBlob=null;
+}
+async function sendRecordedAudio(){
+  if(!recBlob) return;
+  const blob=recBlob; recBlob=null;
+  const p=document.getElementById('recPreview'); if(p){ if(p.src) URL.revokeObjectURL(p.src); p.src=''; }
+  closeDialog('dlgAudioConfirm');
+  await sendAudio(blob);
+}
+/* 话筒按钮：按住录音，松手停止 */
+(function(){
+  const mic=document.getElementById('btnMic');
+  if(!mic) return;
+  let pressing=false;
+  const down=e=>{ e.preventDefault(); pressing=true; startRecord(); };
+  const up=()=>{ if(pressing){ pressing=false; stopRecord(); } };
+  mic.addEventListener('mousedown', down);
+  mic.addEventListener('touchstart', down, {passive:false});
+  window.addEventListener('mouseup', up);
+  mic.addEventListener('touchend', e=>{ e.preventDefault(); up(); }, {passive:false});
+  mic.addEventListener('touchcancel', up);
+})();
+
 /* ===================== 渲染 ===================== */
 function renderAll(){ updateMobileView(); renderContacts(); renderChat(); renderIdentity(); }
 function renderIdentity(){
@@ -1572,14 +1735,15 @@ function renderTopbar(){
   const rc=document.getElementById('btnReconnect');
   const ta=document.getElementById('inputMsg');
   const ba=document.getElementById('btnAttach');
-  if(!currentId){ document.getElementById('topTitle').textContent='未选择联系人'; document.getElementById('topSub').textContent=''; document.getElementById('topStatus').textContent=''; document.getElementById('topStatus').className='status'; btn.style.display='none'; rc.style.display='none'; ta.disabled=true; if(ba) ba.disabled=true; closeAttachMenu(); document.getElementById('messages').innerHTML=emptyHtml(); return; }
+  const bm=document.getElementById('btnMic');
+  if(!currentId){ document.getElementById('topTitle').textContent='未选择联系人'; document.getElementById('topSub').textContent=''; document.getElementById('topStatus').textContent=''; document.getElementById('topStatus').className='status'; btn.style.display='none'; rc.style.display='none'; ta.disabled=true; if(ba) ba.disabled=true; if(bm) bm.disabled=true; closeAttachMenu(); document.getElementById('messages').innerHTML=emptyHtml(); return; }
   const c=getContact(currentId); if(!c) return;
   document.getElementById('topTitle').textContent=contactDisplayText(c);
   document.getElementById('topSub').textContent=c.ip||'未知 IP';
   const st=document.getElementById('topStatus');
   const connected=connections.has(currentId);
-  if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; if(ba) ba.disabled=false; }
-  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=false; if(ba) ba.disabled=false; closeAttachMenu(); } // textarea 始终可用（离线可发送 pending 消息）；附件按钮保持可点击以触发离线提示（toggleAttachMenu 拦截）
+  if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; if(ba) ba.disabled=false; if(bm) bm.disabled=false; }
+  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=false; if(ba) ba.disabled=false; if(bm) bm.disabled=false; closeAttachMenu(); } // textarea 始终可用（离线可发送 pending 消息）；附件/话筒按钮保持可点击以触发离线提示（toggleAttachMenu/startRecord 拦截）
   btn.style.display='';
   rc.style.display= connected? 'none':'inline-block'; // 仅未连接时显示重连按钮
   if(!connected && !hasMessages(currentId)) document.getElementById('messages').innerHTML=notConnHtml();
@@ -1618,6 +1782,11 @@ function renderMessages(){
       el.className='msg video '+(m.dir==='out'?'out':'in');
       el.id='vid-'+m.video.vid;
       renderVideoInto(el, {vid:m.video.vid, name:m.video.name, size:m.video.size, dir:m.dir, ts:m.ts});
+    }
+    else if(m.audio){
+      el.className='msg audio '+(m.dir==='out'?'out':'in');
+      el.id='aud-'+m.audio.aid;
+      renderAudioInto(el, {aid:m.audio.aid, name:m.audio.name, size:m.audio.size, dir:m.dir, ts:m.ts});
     }
     else{
       el.className='msg '+(m.dir==='out'?'out':'in');

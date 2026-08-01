@@ -75,6 +75,8 @@
   .attach-pop button span{font-size:15px}
   #btnAttach{padding:8px 10px;display:inline-flex;align-items:center;justify-content:center;line-height:1}
   #btnAttach svg{display:block}
+  #btnMic{padding:8px 10px;display:inline-flex;align-items:center;justify-content:center;line-height:1;flex:none}
+  #btnMic svg{display:block}
   .notconn{padding:18px;margin:14px;border:1px dashed var(--line);border-radius:10px;text-align:center;color:var(--mut)}
   .notconn button{margin:0 4px}
 
@@ -131,6 +133,13 @@
 .msg.video .img-info{font-size:10px;opacity:.7;margin-top:3px;text-align:right}
 .msg.video .img-expired{display:flex;align-items:center;justify-content:center;min-height:100px;background:var(--panel2);border-radius:8px;color:var(--mut);font-size:12px}
 
+/* 语音消息（内嵌播放器，v2.13.0） */
+.msg.audio{padding:6px;background:transparent;max-width:84%}
+.msg.audio.in{align-self:flex-start}
+.msg.audio audio{width:240px;max-width:220px;height:38px;border-radius:8px;display:block}
+.msg.audio .img-info{font-size:10px;opacity:.7;margin-top:3px;text-align:right}
+.msg.audio .img-expired{display:flex;align-items:center;justify-content:center;min-height:40px;background:var(--panel2);border-radius:8px;color:var(--mut);font-size:12px}
+
   /* 移动端响应式 */
   #btnBack{display:none !important}
   .myip{margin-top:10px;font-size:11px}
@@ -181,3 +190,10 @@
   .iv-toolbar{flex:none;display:flex;gap:6px;background:rgba(0,0,0,.6);padding:8px 10px;border-radius:14px;margin:0 0 max(14px,env(safe-area-inset-bottom));z-index:60}
   .iv-toolbar button{background:rgba(255,255,255,.14);color:#fff;min-width:44px;font-size:15px;padding:9px 11px}
   .iv-toolbar button:hover{background:rgba(255,255,255,.24)}
+
+  /* 录音指示器（v2.13.0） */
+  .rec-indicator{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);background:rgba(0,0,0,.82);color:#fff;padding:9px 18px;border-radius:22px;display:flex;align-items:center;gap:9px;z-index:70;font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+  .rec-dot{width:10px;height:10px;border-radius:50%;background:var(--err);animation:recpulse 1s ease-in-out infinite;flex:none}
+  @keyframes recpulse{0%,100%{opacity:1}50%{opacity:.25}}
+  .rec-hint{font-size:11px;opacity:.7}
+  #recPreview{margin:6px 0}

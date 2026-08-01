@@ -64,9 +64,15 @@
   .sys{align-self:center;font-size:11px;color:var(--mut);background:var(--panel2);padding:3px 10px;border-radius:10px}
   #empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--mut);text-align:center;padding:20px}
   #empty h2{color:var(--txt);font-weight:600}
-  .composer{border-top:1px solid var(--line);padding:10px;display:flex;gap:8px;background:var(--panel)}
+  .composer{border-top:1px solid var(--line);padding:10px;display:flex;gap:8px;background:var(--panel);position:relative}
   #inputMsg{flex:1;min-height:42px;max-height:120px}
   #inputMsg:disabled{opacity:.5}
+  /* 附件弹出菜单（v2.12.0） */
+  .attach-pop{position:absolute;bottom:calc(100% + 6px);right:10px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:6px;display:none;flex-direction:column;gap:2px;z-index:30;min-width:128px;box-shadow:0 4px 16px rgba(0,0,0,.45)}
+  .attach-pop.show{display:flex}
+  .attach-pop button{background:transparent;color:var(--txt);text-align:left;justify-content:flex-start;gap:8px;border:none;padding:8px 10px}
+  .attach-pop button:hover{background:var(--panel)}
+  .attach-pop button span{font-size:15px}
   .notconn{padding:18px;margin:14px;border:1px dashed var(--line);border-radius:10px;text-align:center;color:var(--mut)}
   .notconn button{margin:0 4px}
 
@@ -115,6 +121,13 @@
 .msg.image .img-info{font-size:10px;opacity:.7;margin-top:3px;text-align:right}
 .msg.image .img-expired{display:flex;align-items:center;justify-content:center;min-height:100px;background:var(--panel2);border-radius:8px;color:var(--mut);font-size:12px}
 .read-tag{font-size:10px;color:rgba(255,255,255,.5);margin-left:6px}
+
+/* 视频消息（内嵌播放，v2.12.0） */
+.msg.video{padding:6px;background:transparent;max-width:84%}
+.msg.video.in{align-self:flex-start}
+.msg.video video{max-width:100%;max-height:360px;border-radius:8px;display:block;background:#000}
+.msg.video .img-info{font-size:10px;opacity:.7;margin-top:3px;text-align:right}
+.msg.video .img-expired{display:flex;align-items:center;justify-content:center;min-height:100px;background:var(--panel2);border-radius:8px;color:var(--mut);font-size:12px}
 
   /* 移动端响应式 */
   #btnBack{display:none !important}

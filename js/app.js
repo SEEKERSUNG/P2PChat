@@ -691,7 +691,7 @@ function onChannelMsg(channel, data){
   // 二进制分块到达 file 通道时需回溯同 PC 的 chat 条目查找 incoming 状态
   if(typeof data !== 'string'){
     let target = channelMap.get(channel);
-    if(target && !target.incomingFile && !target.incomingImage){
+    if(target && !target.incomingFile && !target.incomingImage && !target.incomingVideo){
       for(const [ch, inf] of channelMap){
         if(inf.pc===target.pc && inf.isChat && inf.contactId===target.contactId){
           target = inf; break;
@@ -706,6 +706,10 @@ function onChannelMsg(channel, data){
       target.incomingImage.chunks.push(data);
       target.incomingImage.received += data.byteLength;
       updateImageProgress(target.incomingImage.iid);
+    }else if(target && target.incomingVideo){
+      target.incomingVideo.chunks.push(data);
+      target.incomingVideo.received += data.byteLength;
+      updateVideoProgress(target.incomingVideo.vid);
     }
     return;
   }
@@ -739,6 +743,8 @@ function onChannelMsg(channel, data){
   else if(m.type==='file-end'){ finishReceiveFile(cId, info, m.fid); }
   else if(m.type==='image-meta'){ startReceiveImage(cId, info, m); if(cId===currentId) sendReadReceipt(cId); }
   else if(m.type==='image-end'){ finishReceiveImage(cId, info, m.iid); }
+  else if(m.type==='video-meta'){ startReceiveVideo(cId, info, m); if(cId===currentId) sendReadReceipt(cId); }
+  else if(m.type==='video-end'){ finishReceiveVideo(cId, info, m.vid); }
   else if(m.type==='read'){
     const c = getContact(cId);
     if(c){
@@ -1134,6 +1140,16 @@ const fileTransfers = new Map();       // fid -> {received,size,dir,contactId,na
 const fileUrls = new Map();            // fid -> objectURL（运行时下载链接，不持久化）
 
 function pickFile(){ document.getElementById('fileSendInput').click(); }
+/* 附件菜单：聚合 拍照/图片/视频/录像/文件 到「＋」按钮 */
+function toggleAttachMenu(e){
+  e && e.stopPropagation();
+  document.getElementById('attachPop').classList.toggle('show');
+}
+function closeAttachMenu(){ document.getElementById('attachPop').classList.remove('show'); }
+document.getElementById('attachPop').addEventListener('click', e=>{ // 选中任一项后关闭
+  if(e.target.closest('button')) closeAttachMenu();
+});
+document.addEventListener('click', ()=>closeAttachMenu()); // 点外部关闭
 document.getElementById('fileSendInput').addEventListener('change', e=>{
   try{
     const f=e.target.files[0]; e.target.value=''; if(!f) return;
@@ -1332,6 +1348,107 @@ function updateImageProgress(iid){
   if(exp) exp.textContent=pct+'%';
 }
 
+/* ===================== 视频传输（内嵌播放，同 image 模式） ===================== */
+const videoTransfers = new Map();  // vid -> {received,size,dir,contactId,name}（同 imageTransfers 模式）
+const videoUrls = new Map();       // vid -> objectURL（运行时，不持久化）
+
+function pickVideo(){ document.getElementById('videoSendInput').click(); }
+function pickVideoCamera(){ document.getElementById('videoCameraInput').click(); }
+async function sendVideo(file){
+  if(!file.type.startsWith('video/')) return toast("请选择视频文件");
+  const cId=currentConnId();
+  const conn = connections.get(cId);
+  if(!conn || !conn.file || conn.file.readyState!=='open') return toast("未连接，无法发送视频");
+  const channel=conn.file;
+  if(!channel.bufferedAmountLowThreshold || channel.bufferedAmountLowThreshold<1*1024*1024) channel.bufferedAmountLowThreshold=1*1024*1024;
+  const vid=randId();
+  const meta={type:"video-meta", vid, name:file.name, size:file.size, mime:file.type||'video/mp4'};
+  /* meta/分块/end 全走同一 file 通道（同 image），串行锁防并发分块交错 */
+  const release = await acquireFileLock();
+  try{
+    try{ channel.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
+    videoTransfers.set(vid,{received:0,size:file.size,dir:'out',contactId:cId,name:file.name});
+    videoUrls.set(vid, URL.createObjectURL(file)); // 发送方立即显示
+    addVideoMessage(cId,'out',meta);
+    let offset=0;
+    while(offset<file.size && channel.readyState==='open'){
+      const buf=await file.slice(offset, offset+FILE_CHUNK).arrayBuffer();
+      if(channel.bufferedAmount > FILE_BUF_HIGH){
+        try{ await backpressureWait(channel, 30000); }catch(e){ break; }
+      }
+      if(channel.readyState!=='open') break;
+      channel.send(buf);
+      offset+=buf.byteLength;
+      const st=videoTransfers.get(vid); if(st){ st.received=offset; updateVideoProgress(vid); }
+    }
+    if(offset>=file.size){ try{ channel.send(JSON.stringify({type:"video-end", vid})); }catch(e){} }
+  }catch(e){ toast("视频发送失败: "+e.message); }
+  finally{ videoTransfers.delete(vid); release(); }
+}
+function startReceiveVideo(cId, info, m){
+  info.incomingVideo={vid:m.vid, name:m.name, size:m.size, mime:m.mime, received:0, chunks:[]};
+  videoTransfers.set(m.vid,{received:0,size:m.size,dir:'in',contactId:cId,name:m.name});
+  addVideoMessage(cId,'in',m);
+}
+function finishReceiveVideo(cId, info, vid){
+  const inc=info.incomingVideo; info.incomingVideo=null;
+  videoTransfers.delete(vid);
+  if(!inc || inc.vid!==vid) return;
+  const blob=new Blob(inc.chunks,{type:inc.mime||'video/mp4'});
+  videoUrls.set(vid, URL.createObjectURL(blob));
+  if(cId===currentId){
+    const el=document.getElementById('vid-'+vid);
+    if(el) renderVideoInto(el,{vid,name:inc.name,size:inc.size,dir:'in'});
+  }
+}
+function addVideoMessage(contactId, dir, meta){
+  if(!store.messages[contactId]) store.messages[contactId]=[];
+  const item={ts:nowTs(), dir, video:{vid:meta.vid, name:meta.name, size:meta.size}};
+  store.messages[contactId].push(item);
+  const c=getContact(contactId); if(c) c.lastSeen=item.ts;
+  if(dir==='in' && contactId!==currentId){ store.unread[contactId]=(store.unread[contactId]||0)+1; }
+  saveStore();
+  if(contactId===currentId) renderMessages();
+  renderContacts();
+}
+function renderVideoInto(el, v){
+  const url=videoUrls.get(v.vid);
+  const st=videoTransfers.get(v.vid);
+  const transferring=!!st;
+  let body='';
+  if(url){
+    body=`<video controls preload="metadata" src="${url}" title="${escapeHtml(v.name)}"></video>`;
+  }else if(transferring){
+    const pct = st && st.size ? Math.min(100, Math.round(st.received/st.size*100)) : 0;
+    body=`<div class="img-expired"><div style="text-align:center"><span class="spinner" style="margin-right:6px"></span>${pct}%</div></div>`;
+  }else{
+    body=`<div class="img-expired">（视频已失效 · ${fmtSize(v.size)}）</div>`;
+  }
+  const readTag = v.dir==='out' && v.ts ? `<span class="read-tag" data-ts="${v.ts}"></span>` : '';
+  el.innerHTML=body+`<div class="img-info">${fmtTime(v.ts||nowTs())}${readTag}</div>`;
+}
+function updateVideoProgress(vid){
+  const st=videoTransfers.get(vid); if(!st) return;
+  if(st.contactId!==currentId) return;
+  const el=document.getElementById('vid-'+vid); if(!el) return;
+  const pct = st.size ? Math.min(100, Math.round(st.received/st.size*100)) : 100;
+  const exp=el.querySelector('.img-expired>div');
+  if(exp) exp.textContent=pct+'%';
+}
+/* 视频 input 监听（本地选 / 相机录像，capture=environment 移动端调起后置相机） */
+document.getElementById('videoSendInput').addEventListener('change', e=>{
+  try{
+    const f=e.target.files[0]; e.target.value=''; if(!f) return;
+    sendVideo(f).catch(err=>{ console.error('sendVideo:',err); toast('视频发送异常'); });
+  }catch(err){ console.error('video input:',err); toast('操作失败'); }
+});
+document.getElementById('videoCameraInput').addEventListener('change', e=>{
+  try{
+    const f=e.target.files[0]; e.target.value=''; if(!f) return;
+    sendVideo(f).catch(err=>{ console.error('sendVideo:',err); toast('视频发送异常'); });
+  }catch(err){ console.error('video camera input:',err); toast('操作失败'); }
+});
+
 /* ===================== 渲染 ===================== */
 function renderAll(){ updateMobileView(); renderContacts(); renderChat(); renderIdentity(); }
 function renderIdentity(){
@@ -1361,17 +1478,15 @@ function renderTopbar(){
   const btn=document.getElementById('btnDetail');
   const rc=document.getElementById('btnReconnect');
   const ta=document.getElementById('inputMsg');
-  const bf=document.getElementById('btnFile');
-  const bi=document.getElementById('btnImage');
-  const bc=document.getElementById('btnCamera');
-  if(!currentId){ document.getElementById('topTitle').textContent='未选择联系人'; document.getElementById('topSub').textContent=''; document.getElementById('topStatus').textContent=''; document.getElementById('topStatus').className='status'; btn.style.display='none'; rc.style.display='none'; ta.disabled=true; if(bf) bf.disabled=true; if(bi) bi.disabled=true; if(bc) bc.disabled=true; document.getElementById('messages').innerHTML=emptyHtml(); return; }
+  const ba=document.getElementById('btnAttach');
+  if(!currentId){ document.getElementById('topTitle').textContent='未选择联系人'; document.getElementById('topSub').textContent=''; document.getElementById('topStatus').textContent=''; document.getElementById('topStatus').className='status'; btn.style.display='none'; rc.style.display='none'; ta.disabled=true; if(ba) ba.disabled=true; closeAttachMenu(); document.getElementById('messages').innerHTML=emptyHtml(); return; }
   const c=getContact(currentId); if(!c) return;
   document.getElementById('topTitle').textContent=contactDisplayText(c);
   document.getElementById('topSub').textContent=c.ip||'未知 IP';
   const st=document.getElementById('topStatus');
   const connected=connections.has(currentId);
-  if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; if(bf) bf.disabled=false; if(bi) bi.disabled=false; if(bc) bc.disabled=false; }
-  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=false; if(bf) bf.disabled=true; if(bi) bi.disabled=true; if(bc) bc.disabled=true; } // textarea 始终可用（离线可发送 pending 消息）
+  if(connected){ st.textContent='● 已连接'; st.className='status connected'; ta.disabled=false; if(ba) ba.disabled=false; }
+  else{ st.textContent='● 未连接'; st.className='status'; ta.disabled=false; if(ba) ba.disabled=true; closeAttachMenu(); } // textarea 始终可用（离线可发送 pending 消息），附件需 file 通道
   btn.style.display='';
   rc.style.display= connected? 'none':'inline-block'; // 仅未连接时显示重连按钮
   if(!connected && !hasMessages(currentId)) document.getElementById('messages').innerHTML=notConnHtml();
@@ -1405,6 +1520,11 @@ function renderMessages(){
       el.className='msg image '+(m.dir==='out'?'out':'in');
       el.id='img-'+m.image.iid;
       renderImageInto(el, {iid:m.image.iid, name:m.image.name, size:m.image.size, dir:m.dir, ts:m.ts});
+    }
+    else if(m.video){
+      el.className='msg video '+(m.dir==='out'?'out':'in');
+      el.id='vid-'+m.video.vid;
+      renderVideoInto(el, {vid:m.video.vid, name:m.video.name, size:m.video.size, dir:m.dir, ts:m.ts});
     }
     else{
       el.className='msg '+(m.dir==='out'?'out':'in');

@@ -25,6 +25,11 @@ let channelMap = new Map();    // channel -> {pc, contactId|null, isChat}
 let revivable = new Map();     // contactId -> pc（断开后保留的存活通道，用于尝试免交换码恢复）
 let peerBye = new Set();       // 收到对端 bye 主动断开的联系人，不自动恢复
 let autoReviveTimers = new Map(); // contactId -> timeoutId
+let autoReviveRetries = new Map(); // contactId -> 重试次数（autoRevive 失败后指数退避重试，连接成功清零）
+
+/* 心跳：周期 ping/pong 保活 + 探测。iOS 墓碑/安卓息屏恢复后底层 ICE 常短暂 disconnected，
+   心跳数据可激活 ICE keepalive 加速恢复，并让 visibilitychange 主动探测连接存活。 */
+const HEARTBEAT_INTERVAL = 12000; // 空闲心跳间隔
 
 function defaultStore(){
   return {
@@ -506,9 +511,16 @@ function attemptRevive(contactId){
     if(connections.has(contactId)){ res(true); return; } // 已连接
     const pc = revivable.get(contactId);
     if(!pc){ res(false); return; }
-    if(pc.iceConnectionState!=='connected' && pc.iceConnectionState!=='completed'){
+    const st = pc.iceConnectionState;
+    if(st==='closed' || st==='failed'){
+      // ICE 已彻底失效：清理 PC，放弃恢复
       try{ pc.close(); }catch(e){}
       revivable.delete(contactId);
+      res(false); return;
+    }
+    if(st!=='connected' && st!=='completed'){
+      // disconnected 等：iOS 墓碑/息屏恢复后 ICE 常短暂 disconnected，底层网络未变时可自行恢复。
+      // 不破坏 PC，保留 revivable 供后续重试（attemptRevive 重开 DataChannel 需 ICE 已连通）。
       res(false); return;
     }
     let chatCh, fileCh;
@@ -635,7 +647,13 @@ function bindChannel(channel, pc, knownPeerId, knownPeerName, isChat){
     pc.oniceconnectionstatechange = ()=>{
       const st = pc.iceConnectionState;
       if(st==='failed'){ clearConnectWatchdog(); toast("ICE 连接失败：请确认双方在同一局域网或均有公网 IP，并放行入站 UDP；STUN 已启用，若仍失败请检查网络能否访问 STUN 服务器", 7000); onChannelClose(channel); }
-      else if(st==='disconnected'){ toast("连接中断，尝试恢复中..."); }
+      else if(st==='disconnected'){
+        // 不立即清理：iOS 墓碑/安卓息屏恢复后常短暂进入 disconnected，底层网络未变时 ICE 可自行恢复。
+        // 主动发 ping 激活 ICE keepalive，加速恢复；若持续无法恢复最终会 failed → onChannelClose。
+        toast("连接中断，尝试恢复中...");
+        const info = channelMap.get(channel);
+        if(info && info.contactId) sendPing(info.contactId);
+      }
     };
   }
 }
@@ -750,11 +768,33 @@ function onChannelMsg(channel, data){
     }
   }
   else if(m.type==='bye'){ appendSys(cId,"对方已断开"); peerBye.add(cId); }
+  else if(m.type==='ping'){ // 心跳探测：立即回 pong，激活双方 ICE keepalive
+    const conn = connections.get(cId);
+    if(conn && conn.chat){ try{ conn.chat.send(JSON.stringify({type:'pong', ts:m.ts})); }catch(e){} }
+  }
+  else if(m.type==='pong'){ /* 心跳回应：连接存活，无需处理 */ }
   // 收到消息发已送达回执（msg 已通过 ACK 覆盖，此处仅对无 seq 消息和 file-meta 等发 delivered）
-  if(m.type!=='delivered' && m.type!=='read' && m.type!=='ack'){
+  if(m.type!=='delivered' && m.type!=='read' && m.type!=='ack' && m.type!=='ping' && m.type!=='pong'){
     // 仅非 msg 或旧版无 seq 的 msg 发 delivered（新版 msg 走 ACK）
     if(m.type!=='msg' || typeof m.seq!=='number') sendDeliveredReceipt(cId);
   }
+}
+/* 心跳保活：周期性 ping 防止 NAT 映射超时、激活 ICE keepalive；ping/pong 不参与可靠性与
+   回执，仅作活性探测。iOS 墓碑/安卓息屏恢复后立即补发 ping 可加速 ICE 从 disconnected 恢复。 */
+function sendPing(cId){
+  const conn = connections.get(cId);
+  if(conn && conn.chat && conn.chat.readyState==='open'){
+    try{ conn.chat.send(JSON.stringify({type:'ping', ts:nowTs()})); }catch(e){}
+  }
+}
+function startHeartbeat(cId){
+  const conn = connections.get(cId);
+  if(!conn) return;
+  stopHeartbeat(conn);
+  conn.hbTimer = setInterval(()=>sendPing(cId), HEARTBEAT_INTERVAL);
+}
+function stopHeartbeat(conn){
+  if(conn && conn.hbTimer){ clearInterval(conn.hbTimer); conn.hbTimer=null; }
 }
 function finalizeChannels(chatCh, peerId, peerName){
   const chatInfo = channelMap.get(chatCh);
@@ -787,6 +827,7 @@ function finalizeChannels(chatCh, peerId, peerName){
   }
   connections.set(peerId, {chat: chatCh, file: fileCh, pc, outSeq: maxOutSeq+1, inSeq: maxInSeq+1, pending:new Map()});
   revivable.delete(peerId); peerBye.delete(peerId); cancelAutoRevive(peerId);
+  autoReviveRetries.delete(peerId); // 连接成功，清零自动恢复重试计数
   if(pendingPC===pc) pendingPC=null;
   pendingChannel=null;
   clearConnectWatchdog();
@@ -805,6 +846,7 @@ function finalizeChannels(chatCh, peerId, peerName){
   if(!hadLastRead) c.lastReadTs = nowTs();
   if(!oldId) appendSys(peerId, "✅ 已建立加密直连");
   toast("已连接 "+contactDisplayText(c));
+  startHeartbeat(peerId); // 启动心跳保活
   // 自动发送离线期间排队的消息
   flushPendingMessages(peerId);
 }
@@ -825,9 +867,10 @@ function onChannelClose(channel){
   else if(!info.isChat && conn.file===channel) conn.file = null;
   // 两个通道都断开才算真正断开
   if(!conn.chat && !conn.file){
-    // 清理 pending 定时器
+    // 清理 pending 定时器与心跳
     for(const [seq, p] of conn.pending) clearTimeout(p.timer);
     conn.pending.clear();
+    stopHeartbeat(conn);
     connections.delete(cId);
     // 保留底层 PC 以便尝试免交换码恢复
     if(pc && pc.iceConnectionState!=='closed'){ revivable.set(cId, pc); }
@@ -838,15 +881,38 @@ function onChannelClose(channel){
     }
   }
 }
-function scheduleAutoRevive(cId){
-  const delay = 2500 + Math.floor(Math.random()*2000); // 2.5~4.5s 随机抖动，降低双方同时触发
+function scheduleAutoRevive(cId, immediate){
+  cancelAutoRevive(cId);
+  // immediate：visibilitychange 恢复前台时立即探测（墓碑恢复后 ICE 可能仍存活）。
+  // 否则 2.5~4.5s 随机抖动，降低双方同时触发；重试时按次数指数退避。
+  let delay;
+  if(immediate){ delay = 300; }
+  else{
+    const retries = autoReviveRetries.get(cId) || 0;
+    const base = 2500 + Math.floor(Math.random()*2000);
+    delay = base * Math.pow(1.7, retries); // 退避：~3.5s → ~6s → ~10s → ~17s
+  }
   const t = setTimeout(async ()=>{
     autoReviveTimers.delete(cId);
     if(connections.has(cId)) return; // 已恢复或已重连
     if(!revivable.has(cId)) return;
-    appendSys(cId, "↻ 正在尝试自动恢复连接…");
+    const pc = revivable.get(cId);
+    const st = pc.iceConnectionState;
+    if(st==='closed' || st==='failed'){ revivable.delete(cId); return; } // ICE 已失效，放弃
+    if(!immediate) appendSys(cId, "↻ 正在尝试自动恢复连接…");
     const ok = await attemptRevive(cId);
-    if(!ok && cId===currentId){
+    if(ok) return; // 成功，finalizeChannels 会接管（清零重试计数）
+    // 失败但 PC 仍可能恢复（disconnected）：指数退避重试，上限 4 次（覆盖墓碑恢复后 ICE 缓慢恢复的窗口）
+    if(revivable.has(cId) && !peerBye.has(cId) && !connections.has(cId)){
+      const retries = (autoReviveRetries.get(cId) || 0) + 1;
+      autoReviveRetries.set(cId, retries);
+      if(retries < 4){
+        scheduleAutoRevive(cId);
+      }else if(cId===currentId){
+        appendSys(cId, "自动恢复失败，可点「⚡ 重连」手动交换连接码");
+        renderChat();
+      }
+    }else if(cId===currentId && !revivable.has(cId)){
       appendSys(cId, "自动恢复失败，可点「⚡ 重连」手动交换连接码");
       renderChat();
     }
@@ -1424,12 +1490,13 @@ function deleteContact(){
     try{ conn.pc.close(); }catch(e){}
     for(const [seq,p] of conn.pending) clearTimeout(p.timer);
     conn.pending.clear();
+    stopHeartbeat(conn);
     connections.delete(currentId);
   }
   // 关闭可能残留在 revivable 中的 PC，防止 ICE 连接泄漏
   const rv = revivable.get(currentId);
   if(rv){ try{ rv.close(); }catch(e){} }
-  revivable.delete(currentId); cancelAutoRevive(currentId); peerBye.delete(currentId);
+  revivable.delete(currentId); cancelAutoRevive(currentId); autoReviveRetries.delete(currentId); peerBye.delete(currentId);
   store.contacts=store.contacts.filter(c=>c.id!==currentId);
   delete store.messages[currentId];
   currentId=null; saveStore(); renderAll(); closeDialog('dlgDetail'); toast("已删除");
@@ -1480,9 +1547,9 @@ async function doLogout(backup){
   if(backup) await exportJSON(); // 退出前导出一份备份（await 确保导出完成再清数据）
   localStorage.removeItem(STORE_KEY);
   channelMap.forEach(i=>{try{i.pc.close();}catch(e){}});
-  connections.forEach(conn=>{ for(const [seq,p] of conn.pending) clearTimeout(p.timer); conn.pending.clear(); });
+  connections.forEach(conn=>{ for(const [seq,p] of conn.pending) clearTimeout(p.timer); conn.pending.clear(); stopHeartbeat(conn); });
   connections.clear(); channelMap.clear(); revivable.clear(); peerBye.clear();
-  autoReviveTimers.forEach(t=>clearTimeout(t)); autoReviveTimers.clear();
+  autoReviveTimers.forEach(t=>clearTimeout(t)); autoReviveTimers.clear(); autoReviveRetries.clear();
   currentId=null; clearConnectWatchdog();
   store=defaultStore(); // 内存占位，不保存 → 保持 localStorage 为空，下次启动仍引导
   renderAll();
@@ -1527,7 +1594,7 @@ document.getElementById('fileInput').addEventListener('change', e=>{
         if(!store.settings) store.settings={};
         if(!store.unread) store.unread={};
         store.version=4; // 仅直连，忽略历史 STUN 配置
-        connections.forEach(conn=>{ for(const [seq,p] of conn.pending) clearTimeout(p.timer); conn.pending.clear(); });
+        connections.forEach(conn=>{ for(const [seq,p] of conn.pending) clearTimeout(p.timer); conn.pending.clear(); stopHeartbeat(conn); });
         saveStore(); connections.clear(); currentId=null; renderAll(); toast("导入成功");
         if(onboarding){ onboarding=false; closeDialog('dlgOnboard'); }
       }catch(err){ toast("导入失败: "+err.message); }
@@ -1576,6 +1643,19 @@ if(window.matchMedia){
 window.addEventListener('popstate', ()=>{
   if(currentId){ goBack(); return; } // 聊天视图 → 回到列表
   if(isMobile() && !exitAllowed){ showExitConfirm(); return; } // 列表视图 → 拦截退出，弹确认
+});
+/* 后台/息屏恢复探测：iOS 墓碑机制与安卓息屏冻结页面时，ICE keepalive 与心跳定时器随 JS 暂停。
+   恢复前台后底层网络通常未变——立即对每个已连接联系人补发 ping 激活 ICE、探测存活；
+   对断开待恢复（revivable）的连接立即触发 autoRevive（墓碑恢复后 ICE 可能仍存活，可免交换码恢复）。 */
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState !== 'visible') return;
+  for(const cId of connections.keys()) sendPing(cId);
+  for(const cId of revivable.keys()){
+    if(!peerBye.has(cId) && !autoReviveTimers.has(cId) && !connections.has(cId)){
+      autoReviveRetries.delete(cId); // 恢复前台视为新的恢复周期，重置重试计数
+      scheduleAutoRevive(cId, true);
+    }
+  }
 });
 function showExitConfirm(){ document.getElementById('dlgExitConfirm').classList.add('show'); }
 function confirmExit(yes){

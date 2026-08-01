@@ -1048,6 +1048,15 @@ function backpressureWait(channel, timeoutMs){
     channel.addEventListener('error', onClose);
   });
 }
+/* file 通道传输串行锁：同一 file 通道上避免多个传输并发，导致分块交错（接收端 chunks 数组
+   混合，文件/图片损坏）。全局单锁——file 通道同一时刻只跑一个传输，后续排队等候。 */
+let _fileLock = Promise.resolve();
+function acquireFileLock(){
+  const prev = _fileLock;
+  let release;
+  _fileLock = new Promise(r=>{ release = r; });
+  return prev.then(()=>release);
+}
 const fileTransfers = new Map();       // fid -> {received,size,dir,contactId,name} 进度（出/入共用）
 const fileUrls = new Map();            // fid -> objectURL（运行时下载链接，不持久化）
 
@@ -1081,16 +1090,20 @@ function fmtSize(n){
 async function sendFile(file){
   const cId=currentConnId();
   const conn = connections.get(cId);
-  if(!conn || !conn.file) return toast("未连接，无法发送文件");
+  if(!conn || !conn.file || conn.file.readyState!=='open') return toast("未连接，无法发送文件");
   const channel=conn.file;
   if(!channel.bufferedAmountLowThreshold || channel.bufferedAmountLowThreshold<1*1024*1024) channel.bufferedAmountLowThreshold=1*1024*1024;
   const fid=randId();
   const meta={type:"file-meta", fid, name:file.name, size:file.size, mime:file.type||'application/octet-stream'};
-  try{ conn.chat.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
-  fileTransfers.set(fid,{received:0,size:file.size,dir:'out',contactId:cId,name:file.name});
-  addFileMessage(cId,'out',meta);
-  let offset=0;
+  /* meta / 分块 / end 全部走同一 file 通道（同一 SCTP ordered stream），确保 end 严格在所有分块
+     之后到达。旧版 meta/end 走 chat 通道，公网高延迟下 chat 通道的 end 会先于 file 通道尾部分块
+     到达，导致接收方用不完整 chunks 拼 Blob，文件残缺。串行锁防止并发传输分块交错。 */
+  const release = await acquireFileLock();
   try{
+    try{ channel.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
+    fileTransfers.set(fid,{received:0,size:file.size,dir:'out',contactId:cId,name:file.name});
+    addFileMessage(cId,'out',meta);
+    let offset=0;
     while(offset<file.size && channel.readyState==='open'){
       const buf=await file.slice(offset, offset+FILE_CHUNK).arrayBuffer();
       // 背压：缓冲过高时等 bufferedamountlow 事件（带超时 + 通道关闭检测）
@@ -1102,9 +1115,9 @@ async function sendFile(file){
       offset+=buf.byteLength;
       const st=fileTransfers.get(fid); if(st){ st.received=offset; updateFileProgress(fid); }
     }
-    if(offset>=file.size) conn.chat.send(JSON.stringify({type:"file-end", fid}));
+    if(offset>=file.size){ try{ channel.send(JSON.stringify({type:"file-end", fid})); }catch(e){} }
   }catch(e){ toast("文件发送失败: "+e.message); }
-  finally{ fileTransfers.delete(fid); }
+  finally{ fileTransfers.delete(fid); release(); }
 }
 function startReceiveFile(cId, info, m){
   info.incomingFile={fid:m.fid, name:m.name, size:m.size, mime:m.mime, received:0, chunks:[]};
@@ -1166,17 +1179,21 @@ async function sendImage(file){
   if(!file.type.startsWith('image/')) return toast("请选择图片文件");
   const cId=currentConnId();
   const conn = connections.get(cId);
-  if(!conn || !conn.file) return toast("未连接，无法发送图片");
+  if(!conn || !conn.file || conn.file.readyState!=='open') return toast("未连接，无法发送图片");
   const channel=conn.file;
   if(!channel.bufferedAmountLowThreshold || channel.bufferedAmountLowThreshold<1*1024*1024) channel.bufferedAmountLowThreshold=1*1024*1024;
   const iid=randId();
   const meta={type:"image-meta", iid, name:file.name, size:file.size, mime:file.type||'image/png'};
-  try{ conn.chat.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
-  imageTransfers.set(iid,{received:0,size:file.size,dir:'out',contactId:cId,name:file.name});
-  imageUrls.set(iid, URL.createObjectURL(file)); // 发送方立即显示缩略图
-  addImageMessage(cId,'out',meta);
-  let offset=0;
+  /* meta / 分块 / end 全部走同一 file 通道（同一 SCTP ordered stream），确保 end 不会抢先于
+     分块到达——旧版 end 走 chat 通道，公网高延迟下会先于 file 通道尾部分块到达，接收方用不完整
+     chunks 拼 Blob，图片出现顶部一条/灰色条带等残缺。串行锁防止并发传输分块交错。 */
+  const release = await acquireFileLock();
   try{
+    try{ channel.send(JSON.stringify(meta)); }catch(e){ return toast("发送失败: "+e.message); }
+    imageTransfers.set(iid,{received:0,size:file.size,dir:'out',contactId:cId,name:file.name});
+    imageUrls.set(iid, URL.createObjectURL(file)); // 发送方立即显示缩略图
+    addImageMessage(cId,'out',meta);
+    let offset=0;
     while(offset<file.size && channel.readyState==='open'){
       const buf=await file.slice(offset, offset+FILE_CHUNK).arrayBuffer();
       if(channel.bufferedAmount > FILE_BUF_HIGH){
@@ -1187,9 +1204,9 @@ async function sendImage(file){
       offset+=buf.byteLength;
       const st=imageTransfers.get(iid); if(st){ st.received=offset; updateImageProgress(iid); }
     }
-    if(offset>=file.size) conn.chat.send(JSON.stringify({type:"image-end", iid}));
+    if(offset>=file.size){ try{ channel.send(JSON.stringify({type:"image-end", iid})); }catch(e){} }
   }catch(e){ toast("图片发送失败: "+e.message); }
-  finally{ imageTransfers.delete(iid); }
+  finally{ imageTransfers.delete(iid); release(); }
 }
 function startReceiveImage(cId, info, m){
   info.incomingImage={iid:m.iid, name:m.name, size:m.size, mime:m.mime, received:0, chunks:[]};

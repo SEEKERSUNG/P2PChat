@@ -1434,8 +1434,19 @@ const videoUrls = new Map();       // vid -> objectURL（运行时，不持久�
 
 function pickVideo(){ document.getElementById('videoSendInput').click(); }
 function pickVideoCamera(){ document.getElementById('videoCameraInput').click(); }
+// iOS Safari 下 input[capture] 直接调起相机录像，Safari 后台时易被系统回收导致整个浏览器闪退
+// （相机占内存 + 已有 WebRTC 连接占内存）。改走系统选择器（用户仍可选"录像"），Safari 不立即
+// 后台，降低闪退概率；安卓保留 capture 直接调起后置相机。
+(function(){
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+  if(isIOS){
+    const vci=document.getElementById('videoCameraInput');
+    if(vci) vci.removeAttribute('capture');
+  }
+})();
 async function sendVideo(file){
   if(!file.type.startsWith('video/')) return toast("请选择视频文件");
+  if(file.size > 100*1024*1024) return toast("视频过大（>100MB），请缩短或压缩后再发，以免接收端内存溢出");
   const cId=currentConnId();
   const conn = connections.get(cId);
   if(!conn || !conn.file || conn.file.readyState!=='open') return toast("未连接，无法发送视频");
